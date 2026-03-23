@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { validateRequiredFields } from "./middleware/validation";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -14,6 +15,24 @@ app.get("/health", (_req, res) => {
 app.get("/api/v1/slots", (_req, res) => {
   res.json({ slots: [] });
 });
+
+app.post(
+  "/api/v1/slots",
+  validateRequiredFields(["professional", "startTime", "endTime"]),
+  (req, res) => {
+    const { professional, startTime, endTime } = req.body;
+
+    res.status(201).json({
+      success: true,
+      slot: {
+        id: 1,
+        professional,
+        startTime,
+        endTime,
+      },
+    });
+  },
+);
 
 if (process.env.NODE_ENV !== "test") {
   app.listen(PORT, () => {
