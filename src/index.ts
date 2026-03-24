@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import { validateRequiredFields } from "./middleware/validation";
+import { validateRequiredFields } from "./middleware/validation.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
