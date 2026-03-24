@@ -23,6 +23,10 @@ cd chronopay-backend
 # Install dependencies
 npm install
 
+# Configure environment variables
+cp .env.example .env
+# Edit .env and set JWT_SECRET to a strong random value
+
 # Build
 npm run build
 
@@ -47,8 +51,69 @@ npm run start
 
 ## API (stub)
 
-- `GET /health` — Health check; returns `{ status: "ok", service: "chronopay-backend" }`
-- `GET /api/v1/slots` — List time slots (currently returns empty array)
+### Public routes
+
+| Method | Path      | Description                                              |
+|--------|-----------|----------------------------------------------------------|
+| GET    | `/health` | Health check; returns `{ status: "ok", service: "chronopay-backend" }` |
+
+### Protected routes
+
+These routes require a valid JWT Bearer token in the `Authorization` header.
+
+| Method | Path             | Description                       |
+|--------|------------------|-----------------------------------|
+| GET    | `/api/v1/slots`  | List time slots (returns `[]`)    |
+| POST   | `/api/v1/slots`  | Create a time slot                |
+
+## Authentication
+
+Protected routes validate a JWT Bearer token on every request.
+
+### Request header
+
+```
+Authorization: Bearer <your-jwt-token>
+```
+
+### Environment variables
+
+| Variable     | Required | Description                                               |
+|--------------|----------|-----------------------------------------------------------|
+| `JWT_SECRET` | Yes      | Secret key for signing and verifying JWT tokens (HS256).  |
+| `PORT`       | No       | HTTP port (default: `3001`).                              |
+
+Copy `.env.example` to `.env` and set `JWT_SECRET` to a cryptographically random value before running the server locally:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+### Error responses
+
+All authentication failures return `401 Unauthorized` with the shape `{ success: false, error: string }`:
+
+| Condition                              | `error` value                                   |
+|----------------------------------------|-------------------------------------------------|
+| Missing `Authorization` header         | `"Authorization header is required"`            |
+| Header does not use `Bearer` scheme    | `"Authorization header must use Bearer scheme"` |
+| Token is invalid or signature mismatch | `"Invalid or expired token"`                    |
+| Token has expired                      | `"Invalid or expired token"`                    |
+
+### Generating a token (development)
+
+```js
+import { SignJWT } from "jose";
+
+const secret = new TextEncoder().encode(process.env.JWT_SECRET);
+const token = await new SignJWT({ sub: "user-id" })
+  .setProtectedHeader({ alg: "HS256" })
+  .setIssuedAt()
+  .setExpirationTime("24h")
+  .sign(secret);
+
+console.log(token);
+```
 
 ## Contributing
 
