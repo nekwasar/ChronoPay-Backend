@@ -48,6 +48,35 @@ app.post(
   },
 );
 
+// SMS notification endpoint (implements BE-031 requirement)
+import { InMemorySmsProvider, SmsNotificationService } from "./services/smsNotification";
+
+const smsService = new SmsNotificationService(new InMemorySmsProvider());
+
+app.post(
+  "/api/v1/notifications/sms",
+  validateRequiredFields(["to", "message"]),
+  async (req, res) => {
+    const { to, message } = req.body;
+
+    const result = await smsService.send(to, message);
+
+    if (result.success) {
+      return res.status(200).json({
+        success: true,
+        provider: result.provider,
+        providerMessageId: result.providerMessageId,
+      });
+    }
+
+    return res.status(502).json({
+      success: false,
+      error: result.error,
+    });
+  },
+);
+
+
 if (process.env.NODE_ENV !== "test") {
   app.listen(PORT, () => {
     console.log(`ChronoPay API listening on http://localhost:${PORT}`);

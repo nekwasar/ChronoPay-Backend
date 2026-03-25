@@ -49,6 +49,23 @@ npm run start
 
 - `GET /health` — Health check; returns `{ status: "ok", service: "chronopay-backend" }`
 - `GET /api/v1/slots` — List time slots (currently returns empty array)
+- `POST /api/v1/notifications/sms` — Send an SMS using abstraction (required body fields: `to`, `message`)
+
+## SMS Notification Abstraction (BE-031)
+
+This repo now has a production-style SMS abstraction under `src/services/smsNotification.ts`:
+
+- `SmsProvider`: provider interface (method `sendSms(to, message)`)
+- `SmsNotificationService`: validation, rate-limit-safe message length, E.164 checks, provider error translation
+- `InMemorySmsProvider`: test stub and local fallback implementation with deterministic failure support
+
+Failure modes handled:
+
+- missing/invalid payload (400 via validation middleware)
+- malformed phone (400 via service validation)
+- message too long (400 via service validation)
+- provider rejection (502 with error message)
+- provider exceptions (502 with exception detail)
 
 ## Contributing
 
