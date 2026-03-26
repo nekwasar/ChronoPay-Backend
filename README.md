@@ -65,6 +65,34 @@ On every push and pull request to `main`, GitHub Actions runs:
 - **Build**: `npm run build`
 - **Tests**: `npm test`
 
+## Database
+
+A production-grade PostgreSQL connection pool has been integrated using the `pg` library.
+
+### Environment Variable
+
+Add the following to your `.env` (see `.example.env`):
+
+```
+POSTGRESQL_URL=postgres://user:password@localhost:5432/chronopay
+```
+
+### Pool Configuration
+
+The pool is configured in `src/db/pool.ts`:
+
+- `max: 20` — maximum concurrent clients
+- `idleTimeoutMillis: 30000` — idle client timeout
+- `connectionTimeoutMillis: 5000` — connection attempt timeout
+
+### Behaviour
+
+- **Fail fast**: the server exits on startup if `POSTGRESQL_URL` is missing or the database is unreachable.
+- **Error handling**: idle client errors are logged via `pool.on("error")` without crashing the process.
+- **Graceful shutdown**: the pool is closed cleanly on `SIGINT`/`SIGTERM`.
+- **Query wrapper**: use the exported `query(text, params)` helper from `src/db/pool.ts` to run parameterised queries.
+- **Tests**: all database logic is unit-tested with a fully mocked `pg` driver — no live database required.
+
 ## License
 
 MIT

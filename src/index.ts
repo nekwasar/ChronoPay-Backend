@@ -1,6 +1,9 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { validateRequiredFields } from "./middleware/validation";
+import { validateRequiredFields } from "./middleware/validation.js";
+
+import { initDB, closePool } from "./db/pool.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -48,10 +51,26 @@ app.post(
   },
 );
 
-if (process.env.NODE_ENV !== "test") {
-  app.listen(PORT, () => {
-    console.log(`ChronoPay API listening on http://localhost:${PORT}`);
-  });
+if (process.env.NODE_ENV !== "test" && !process.env.JEST_WORKER_ID) {
+  // Initialize Database connection on start
+  initDB()
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(`ChronoPay API listening on http://localhost:${PORT}`);
+      });
+    })
+    .catch((err) => {
+      console.error(err.message);
+      process.exit(1);
+    });
+
+  const shutdown = async () => {
+    await closePool();
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
 
 export default app;
