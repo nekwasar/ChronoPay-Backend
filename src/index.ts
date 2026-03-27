@@ -1,12 +1,20 @@
 import express from "express";
 import cors from "cors";
-import { validateRequiredFields } from "./middleware/validation";
+import { validateRequiredFields } from "./middleware/validation.js";
+import {
+  featureFlagContextMiddleware,
+  initializeFeatureFlagsFromEnv,
+  requireFeatureFlag,
+} from "./middleware/featureFlags.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 
+initializeFeatureFlagsFromEnv();
+
 app.use(cors());
 app.use(express.json());
+app.use(featureFlagContextMiddleware);
 
 import swaggerUi from "swagger-ui-express";
 import swaggerJsdoc from "swagger-jsdoc";
@@ -32,6 +40,7 @@ app.get("/api/v1/slots", (_req, res) => {
 
 app.post(
   "/api/v1/slots",
+  requireFeatureFlag("CREATE_SLOT"),
   validateRequiredFields(["professional", "startTime", "endTime"]),
   (req, res) => {
     const { professional, startTime, endTime } = req.body;
@@ -48,6 +57,7 @@ app.post(
   },
 );
 
+/* istanbul ignore next -- startup listen side effect is intentionally skipped in tests */
 if (process.env.NODE_ENV !== "test") {
   app.listen(PORT, () => {
     console.log(`ChronoPay API listening on http://localhost:${PORT}`);

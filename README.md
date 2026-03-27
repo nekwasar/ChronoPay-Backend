@@ -50,6 +50,61 @@ npm run start
 - `GET /health` — Health check; returns `{ status: "ok", service: "chronopay-backend" }`
 - `GET /api/v1/slots` — List time slots (currently returns empty array)
 
+## Feature Flags
+
+ChronoPay backend uses environment-driven feature flags for safe rollout and rapid disable.
+
+### Configuration
+
+- Flag env format: `FF_<FLAG_NAME>`
+- Initial flags:
+	- `FF_CREATE_SLOT` controls `POST /api/v1/slots`
+
+Supported values (case-insensitive):
+
+- Enabled: `true`, `1`, `on`, `yes`
+- Disabled: `false`, `0`, `off`, `no`
+
+If a flag env variable is missing, the service uses the registered default value.
+
+### Runtime behavior
+
+- `POST /api/v1/slots` when `FF_CREATE_SLOT=true`: route behaves normally.
+- `POST /api/v1/slots` when `FF_CREATE_SLOT=false`: returns `503` and:
+
+```json
+{
+	"success": false,
+	"code": "FEATURE_DISABLED",
+	"error": "Feature CREATE_SLOT is currently disabled"
+}
+```
+
+- `GET /health` and `GET /api/v1/slots` are unaffected by this flag.
+
+### Failure-mode handling
+
+- Missing flag env var: falls back to default.
+- Malformed flag value: service fails at startup with explicit configuration error.
+- Unknown flag lookup in code path: treated as server misconfiguration and rejected.
+
+### Quick local examples
+
+```bash
+# Enable slot creation
+FF_CREATE_SLOT=true npm run dev
+
+# Disable slot creation (POST returns 503)
+FF_CREATE_SLOT=false npm run dev
+```
+
+### Acceptance criteria
+
+- Feature flags are validated at startup with strict allowed values.
+- Guarded endpoint responds with deterministic `503` payload when disabled.
+- Unguarded endpoints keep current behavior.
+- Automated tests cover enabled, disabled, and malformed-config paths.
+
 ## Contributing
 
 1. Fork the repo and create a branch from `main`.
