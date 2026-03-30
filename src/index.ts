@@ -1,93 +1,184 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import { logInfo } from "./utils/logger.js";
+import {
+  createRequestLogger,
+  errorLoggerMiddleware,
+} from "./middleware/requestLogger.js";
 import { validateRequiredFields } from "./middleware/validation";
+import rateLimiter from "./middleware/rateLimiter.js";
 
-const app = express();
-const PORT = process.env.PORT ?? 3001;
+import { loadEnvConfig, type EnvConfig } from "./config/env.js";
+import {
+  requireAuthenticatedActor,
+  type AuthenticatedRequest,
+} from "./middleware/auth.js";
+import { validateRequiredFields } from "./middleware/validation.js";
+import {
+  BookingIntentError,
+  BookingIntentService,
+  parseCreateBookingIntentBody,
+} from "./modules/booking-intents/booking-intent-service.js";
+import { InMemoryBookingIntentRepository } from "./modules/booking-intents/booking-intent-repository.js";
+import { InMemorySlotRepository } from "./modules/slots/slot-repository.js";
 
-type Slot = {
-  id: number;
-  professional: string;
-  startTime: number;
-  endTime: number;
-  createdAt: string;
-};
+// Request logging middleware (must be first)
+app.use(createRequestLogger());
 
-const slotStore = new Map<number, Slot>();
-let nextSlotId = 1;
+// Initialize CORS configuration from environment
+const corsConfig = getCORSConfig();
+validateCORSConfig(corsConfig);
 
-const parsePositiveInt = (value: string): number | null => {
-  if (!/^\d+$/.test(value)) {
-    return null;
-  }
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-};
-
-// Test-only helper to keep API tests isolated and deterministic.
-export const __resetSlotsForTests = () => {
-  slotStore.clear();
-  nextSlotId = 1;
-};
-
-app.use(cors());
+// Apply CORS middleware with allowlist validation
+app.use(createCORSMiddleware(corsConfig));
 app.use(express.json());
+app.use(metricsMiddleware);
 
-import swaggerUi from "swagger-ui-express";
-import swaggerJsdoc from "swagger-jsdoc";
+/**
+ * @api {get} /metrics Get Prometheus metrics
+ * @apiName GetMetrics
+ * @apiGroup Monitoring
+ * @apiDescription Exposes application metrics in Prometheus format.
+ */
+app.get("/metrics", async (_req, res) => {
+  try {
+    res.set("Content-Type", register.contentType);
+    res.end(await register.metrics());
+  } catch (err) {
+    res.status(500).end(err);
+  }
+});
+
+interface AppListener {
+  listen(port: number, callback?: () => void): unknown;
+}
+
+export function createApp(options?: {
+  slotRepository?: InMemorySlotRepository;
+  bookingIntentService?: BookingIntentService;
+}) {
+  const app = express();
+  const slotRepository = options?.slotRepository ?? new InMemorySlotRepository();
+  const bookingIntentService =
+    options?.bookingIntentService ??
+    new BookingIntentService(new InMemoryBookingIntentRepository(), slotRepository);
+
+  app.use(cors());
+  app.use(express.json());
+
+  const swaggerOptions = {
+    swaggerDefinition: {
+      openapi: "3.0.0",
+      info: { title: "ChronoPay API", version: "1.0.0" },
+    },
+    apis: ["./src/routes/*.ts"], // adjust if needed
+  };
+
+  const specs = swaggerJsdoc(swaggerOptions);
+  app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(specs));
+
+  app.get("/health", (_req, res) => {
+    res.json({ status: "ok", service: "chronopay-backend" });
+  });
+
+  app.get("/api/v1/slots", (_req, res) => {
+    res.json({ slots: slotRepository.list() });
+  });
+
+  app.post(
+    "/api/v1/slots",
+    validateRequiredFields(["professional", "startTime", "endTime"]),
+    (req, res) => {
+      const { professional, startTime, endTime } = req.body;
+
+      res.status(201).json({
+        success: true,
+        slot: {
+          id: 1,
+          professional,
+          startTime,
+          endTime,
+        },
+      });
+    },
+  );
 
 const options = {
-  swaggerDefinition: {
+  definition: {
     openapi: "3.0.0",
     info: { title: "ChronoPay API", version: "1.0.0" },
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "JWT",
+        },
+      },
+    },
   },
-  apis: ["./src/routes/*.ts"], // adjust if needed
+  apis: ["./src/index.ts"], // adjust if needed
 };
 
-const specs = swaggerJsdoc(options);
+const specs = swaggerJsdoc(swaggerOptions);
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(specs));
 
+/**
+ * @swagger
+ * /health:
+ *   get:
+ *     summary: Health check endpoint
+ *     description: Returns the health status of the service
+ *     responses:
+ *       200:
+ *         description: Service is healthy
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: ok
+ *                 service:
+ *                   type: string
+ *                   example: chronopay-backend
+ *                 timestamp:
+ *                   type: string
+ *                   example: 2023-10-01T12:00:00.000Z
+ *                 version:
+ *                   type: string
+ *                   example: 1.0.0
+ */
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "chronopay-backend" });
+  const healthStatus = { status: "ok", service: "chronopay-backend" };
+  logInfo("Health check endpoint called", { endpoint: "/health" });
+  res.json(healthStatus);
 });
 
 app.get("/api/v1/slots", (_req, res) => {
-  const slots = Array.from(slotStore.values()).sort((a, b) => a.id - b.id);
-  res.json({ slots });
+  logInfo("Slots endpoint called", { endpoint: "/api/v1/slots" });
+  res.json({ slots: [] });
 });
 
+// Error handling middleware (must be last)
+app.use(errorLoggerMiddleware);
 app.post(
   "/api/v1/slots",
+  authenticateToken, // auth first: reject unauthenticated requests before validation
   validateRequiredFields(["professional", "startTime", "endTime"]),
   (req, res) => {
     const { professional, startTime, endTime } = req.body;
 
-    const normalizedStart = Number(startTime);
-    const normalizedEnd = Number(endTime);
-
-    if (!Number.isFinite(normalizedStart) || !Number.isFinite(normalizedEnd)) {
-      return res.status(400).json({
-        success: false,
-        error: "startTime and endTime must be valid numbers",
-      });
-    }
-
-    if (normalizedStart >= normalizedEnd) {
-      return res.status(400).json({
-        success: false,
-        error: "startTime must be less than endTime",
-      });
-    }
-
-    const slot: Slot = {
-      id: nextSlotId++,
+    const slot = {
+      id: Date.now(),
       professional,
-      startTime: normalizedStart,
-      endTime: normalizedEnd,
-      createdAt: new Date().toISOString(),
+      startTime,
+      endTime,
     };
 
-    slotStore.set(slot.id, slot);
+    scheduleReminders(slot.id, startTime);
 
     res.status(201).json({
       success: true,
@@ -96,90 +187,27 @@ app.post(
   },
 );
 
-/**
- * @swagger
- * /api/v1/slots/{id}:
- *   delete:
- *     summary: Delete a slot
- *     description: Deletes an existing slot if the caller is the slot owner or an admin.
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: integer
- *         description: Slot ID
- *       - in: header
- *         name: x-user-id
- *         required: true
- *         schema:
- *           type: string
- *         description: Caller identity.
- *       - in: header
- *         name: x-role
- *         required: false
- *         schema:
- *           type: string
- *         description: Set to `admin` to bypass owner check.
- *     responses:
- *       200:
- *         description: Slot deleted.
- *       400:
- *         description: Invalid slot ID.
- *       401:
- *         description: Missing caller identity.
- *       403:
- *         description: Caller is not allowed to delete this slot.
- *       404:
- *         description: Slot not found.
- */
-app.delete("/api/v1/slots/:id", (req, res) => {
-  const id = parsePositiveInt(req.params.id);
-  if (!id) {
-    return res.status(400).json({
-      success: false,
-      error: "Invalid slot id",
-    });
-  }
+// 404 handler for unmatched routes
+app.use(notFoundMiddleware);
 
-  const slot = slotStore.get(id);
-  if (!slot) {
-    return res.status(404).json({
-      success: false,
-      error: "Slot not found",
-    });
-  }
-
-  const actor = req.header("x-user-id")?.trim();
-  const role = req.header("x-role")?.trim().toLowerCase();
-  const isAdmin = role === "admin";
-
-  if (!actor && !isAdmin) {
-    return res.status(401).json({
-      success: false,
-      error: "Missing caller identity",
-    });
-  }
-
-  if (!isAdmin && actor !== slot.professional) {
-    return res.status(403).json({
-      success: false,
-      error: "Forbidden: caller does not own this slot",
-    });
-  }
-
-  slotStore.delete(id);
-
-  return res.status(200).json({
-    success: true,
-    deletedSlotId: id,
-  });
-});
+// Global error handler
+app.use(errorHandler);
 
 if (process.env.NODE_ENV !== "test") {
+  startScheduler();
+
   app.listen(PORT, () => {
-    console.log(`ChronoPay API listening on http://localhost:${PORT}`);
+    logInfo(`ChronoPay API listening on http://localhost:${PORT}`, {
+      port: PORT,
+      environment: process.env.NODE_ENV || "development",
+    });
   });
+}
+
+const app = createApp();
+
+if (config.nodeEnv !== "test") {
+  startServer(app, config);
 }
 
 export default app;
