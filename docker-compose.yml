@@ -1,48 +1,8 @@
-# Base Docker Compose configuration for ChronoPay Backend
-# This file defines the core services and can be extended with:
-# - docker-compose.override.yml (for local development)
-# - docker-compose.prod.yml (for production deployments)
-
-version: "3.8"
-
 services:
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: production
-    container_name: chronopay-api
-    restart: unless-stopped
+  backend:
+    build: .
     ports:
-      - "${PORT:-3001}:3001"
+      - "3001:3001"
     environment:
-      - NODE_ENV=${NODE_ENV:-production}
-      - PORT=${PORT:-3001}
-    networks:
-      - chronopay-network
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp:noexec,nosuid,size=50m
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
-
-networks:
-  chronopay-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
+      - NODE_ENV=production
+    restart: unless-stopped

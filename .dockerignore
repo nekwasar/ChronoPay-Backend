@@ -1,61 +1,12 @@
-# Dependencies
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-package-lock.json
-yarn.lock
-
-# Build output
-dist/
-build/
-*.tsbuildinfo
-
-# Environment files
-.env
-.env.local
-.env.*.local
-.env.development
-.env.test
-.env.production
-
-# Logs
-logs/
-*.log
-
-# Testing
-coverage/
-.nyc_output/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Git
-.git/
-.gitignore
-
-# Docker
-Dockerfile*
-docker-compose*.yml
+node_modules
+dist
+.git
+.github
+npm-debug.log
+Dockerfile
+docker-compose.yml
 .dockerignore
-docker-data/
-
-# CI/CD
-.github/
-
-# Documentation
 README.md
-CHANGELOG.md
-docs/
-
-# Misc
-*.md
-.editorconfig
-.eslintrc*
-.prettierrc*
-jest.config.*
+jest.config.cjs
+tsconfig.json
+src/__tests__
