@@ -255,6 +255,165 @@ describe("POST /api/v1/slots", () => {
 });
 
 // ─────────────────────────────────────────────
+// GET /api/v1/slots/:id
+// ─────────────────────────────────────────────
+
+describe("GET /api/v1/slots/:id", () => {
+  const VALID_SLOT = {
+    professional: "Dr. Lookup",
+    startTime: "2024-08-01T10:00:00Z",
+    endTime: "2024-08-01T10:30:00Z",
+  };
+
+  it("returns 400 for invalid id (non-number)", async () => {
+    setRedisClient(makeMockRedis());
+
+    const res = await request(app).get("/api/v1/slots/abc");
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("returns 400 for invalid id (negative)", async () => {
+    setRedisClient(makeMockRedis());
+
+    const res = await request(app).get("/api/v1/slots/-1");
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when slot does not exist", async () => {
+    setRedisClient(makeMockRedis());
+
+    const res = await request(app).get("/api/v1/slots/1");
+
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("returns slot from store on cache MISS", async () => {
+    const redis = makeMockRedis({
+      get: jest.fn<RedisClient["get"]>().mockResolvedValue(null),
+    });
+
+    setRedisClient(redis);
+
+    const create = await request(app)
+      .post("/api/v1/slots")
+      .send(VALID_SLOT);
+
+    const id = create.body.slot.id;
+
+    const res = await request(app).get(`/api/v1/slots/${id}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.slot.id).toBe(id);
+    expect(res.headers["x-cache"]).toBe("MISS");
+
+    expect(redis.set).toHaveBeenCalled(); // cache populated
+  });
+
+  it("returns slot from cache (HIT)", async () => {
+    const redis = makeMockRedis({
+      get: jest
+        .fn<RedisClient["get"]>()
+        .mockResolvedValue(
+          JSON.stringify([
+            {
+              id: 5,
+              professional: "Dr. Cached Single",
+              startTime: "2024-01-01T00:00:00Z",
+              endTime: "2024-01-01T01:00:00Z",
+            },
+          ]),
+        ),
+    });
+
+    setRedisClient(redis);
+
+    const res = await request(app).get("/api/v1/slots/5");
+
+    expect(res.status).toBe(200);
+    expect(res.body.slot.professional).toBe("Dr. Cached Single");
+    expect(res.headers["x-cache"]).toBe("HIT");
+
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 if not in cached dataset", async () => {
+    const redis = makeMockRedis({
+      get: jest
+        .fn<RedisClient["get"]>()
+        .mockResolvedValue(JSON.stringify(CACHED_SLOTS)),
+    });
+
+    setRedisClient(redis);
+
+    const res = await request(app).get("/api/v1/slots/123");
+
+    expect(res.status).toBe(404);
+  });
+
+  it("graceful fallback when Redis get fails", async () => {
+    const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    const redis = makeMockRedis({
+      get: jest
+        .fn<RedisClient["get"]>()
+        .mockRejectedValue(new Error("ECONNREFUSED")),
+    });
+
+    setRedisClient(redis);
+
+    const create = await request(app)
+      .post("/api/v1/slots")
+      .send(VALID_SLOT);
+
+    const id = create.body.slot.id;
+
+    const res = await request(app).get(`/api/v1/slots/${id}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.slot.id).toBe(id);
+
+    consoleSpy.mockRestore();
+  });
+
+  it("returns 404 in fallback if slot missing", async () => {
+    const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    const redis = makeMockRedis({
+      get: jest
+        .fn<RedisClient["get"]>()
+        .mockRejectedValue(new Error("ECONNREFUSED")),
+    });
+
+    setRedisClient(redis);
+
+    const res = await request(app).get("/api/v1/slots/999");
+
+    expect(res.status).toBe(404);
+
+    consoleSpy.mockRestore();
+  });
+
+  it("works without Redis", async () => {
+    setRedisClient(null);
+
+    const create = await request(app)
+      .post("/api/v1/slots")
+      .send(VALID_SLOT);
+
+    const id = create.body.slot.id;
+
+    const res = await request(app).get(`/api/v1/slots/${id}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.slot.id).toBe(id);
+  });
+});
+
+// ─────────────────────────────────────────────
 // HEALTH
 // ─────────────────────────────────────────────
 

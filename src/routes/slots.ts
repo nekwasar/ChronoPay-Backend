@@ -180,4 +180,103 @@ router.post(
   },
 );
 
+/**
+ * @openapi
+ * /api/v1/slots/{id}:
+ *   get:
+ *     summary: Get slot by ID
+ *     description: >
+ *       Returns a single slot by ID.
+ *       Attempts to read from cache first, then falls back to data store.
+ *     tags: [Slots]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Slot ID
+ *     responses:
+ *       200:
+ *         description: Slot found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 slot:
+ *                   $ref: '#/components/schemas/Slot'
+ *       400:
+ *         description: Invalid ID supplied
+ *       404:
+ *         description: Slot not found
+ */
+router.get("/:id", async (req: Request, res: Response): Promise<void> => {
+  const idParam = req.params.id;
+
+  // ── Validate ID ───────────────────────────────────────────────
+  const id = Number(idParam);
+
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({
+      success: false,
+      error: "Invalid slot id",
+    });
+    return;
+  }
+
+  try {
+    // ── 1. Try cache first ───────────────────────────────────────
+    const cached = await getCachedSlots();
+
+    if (cached !== null) {
+      const slot = cached.find((s) => s.id === id);
+
+      if (!slot) {
+        res.status(404).json({
+          success: false,
+          error: "Slot not found",
+        });
+        return;
+      }
+
+      res.set("X-Cache", "HIT");
+      res.json({ slot });
+      return;
+    }
+
+    // ── 2. Cache miss → fallback to store ───────────────────────
+    const slot = slotStore.find((s) => s.id === id);
+
+    if (!slot) {
+      res.status(404).json({
+        success: false,
+        error: "Slot not found",
+      });
+      return;
+    }
+
+    // populate cache for next calls
+    await setCachedSlots([...slotStore]);
+
+    res.set("X-Cache", "MISS");
+    res.json({ slot });
+  } catch (err) {
+    // ── Graceful degradation ────────────────────────────────────
+    console.error("Get slot by id failed", err);
+
+    const slot = slotStore.find((s) => s.id === id);
+
+    if (!slot) {
+      res.status(404).json({
+        success: false,
+        error: "Slot not found",
+      });
+      return;
+    }
+
+    res.json({ slot });
+  }
+});
+
 export default router;
