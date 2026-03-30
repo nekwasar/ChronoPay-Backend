@@ -104,7 +104,7 @@ export function createApp(options?: {
   );
 
 const options = {
-  swaggerDefinition: {
+  definition: {
     openapi: "3.0.0",
     info: { title: "ChronoPay API", version: "1.0.0" },
     components: {
