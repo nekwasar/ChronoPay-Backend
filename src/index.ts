@@ -170,14 +170,18 @@ app.post(
   (req, res) => {
     const { professional, startTime, endTime } = req.body;
 
+    const slot = {
+      id: Date.now(),
+      professional,
+      startTime,
+      endTime,
+    };
+
+    scheduleReminders(slot.id, startTime);
+
     res.status(201).json({
       success: true,
-      slot: {
-        id: 1,
-        professional,
-        startTime,
-        endTime,
-      },
+      slot,
     });
   },
 );
@@ -189,6 +193,8 @@ app.use(notFoundMiddleware);
 app.use(errorHandler);
 
 if (process.env.NODE_ENV !== "test") {
+  startScheduler();
+
   app.listen(PORT, () => {
     logInfo(`ChronoPay API listening on http://localhost:${PORT}`, {
       port: PORT,
