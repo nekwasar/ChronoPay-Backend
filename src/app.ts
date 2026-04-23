@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import cors from "cors";
 import express, { Request, Response } from "express";
 import { requireApiKey } from "./middleware/apiKeyAuth.js";
+import { createRequestLogger } from "./middleware/requestLogger.js";
 import {
   genericErrorHandler,
   jsonParseErrorHandler,
@@ -70,6 +71,7 @@ export function createApp(options: AppFactoryOptions = {}) {
 
   app.use(cors());
   app.use(express.json({ limit: "100kb" }));
+  app.use(createRequestLogger());
 
   if (options.enableDocs !== false) {
     registerSwaggerDocs(app);
