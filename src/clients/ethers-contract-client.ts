@@ -2,6 +2,7 @@ import { ethers } from "ethers";
 import { IContractClient } from "./contract-client.interface.js";
 import { ContractInteractionArgs, ContractCallResult, TransactionResult } from "./types.js";
 import { ContractService } from "../services/contract.service.js";
+import { ContractInvalidRequestError } from "../errors/contractErrors.js";
 
 /**
  * Ethers.js implementation of the IContractClient.
@@ -66,7 +67,7 @@ export class EthersContractClient implements IContractClient {
    */
   async sendTransaction(args: ContractInteractionArgs): Promise<TransactionResult> {
     if (!this.signer) {
-      throw new Error("Signer is required for sending transactions");
+      throw new ContractInvalidRequestError("Signer is required for sending transactions");
     }
 
     const contract = this.createContract(args.address, args.abi, this.signer);
