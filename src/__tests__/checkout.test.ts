@@ -95,6 +95,7 @@ describe("Checkout Session API", () => {
           amount: 1000000, // 1 XLM in stroops
           currency: "XLM",
           paymentMethod: "crypto",
+          asset: "native",
         },
         customer: {
           customerId: "stellar_wallet_123",
@@ -204,7 +205,7 @@ describe("Checkout Session API", () => {
         .post("/api/v1/checkout/sessions")
         .send({
           payment: {
-            amount: 2e9, // Exceeds 1e9 limit
+            amount: 2e14, // Exceeds 1e14 limit
             currency: "USD",
             paymentMethod: "credit_card",
           },
