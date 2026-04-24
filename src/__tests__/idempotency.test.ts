@@ -1,5 +1,34 @@
 import request from "supertest";
-import app from "../index.js";
+import express from "express";
+import { idempotencyMiddleware } from "../middleware/idempotency.js";
+
+const app = express();
+app.use(express.json());
+
+// Mock validation middleware that just checks for required fields
+const mockValidation = (req: any, res: any, next: any) => {
+  const { professional, startTime, endTime } = req.body;
+  if (!professional || !startTime || !endTime) {
+    return res.status(400).json({ success: false });
+  }
+  next();
+};
+
+app.post("/api/v1/slots", mockValidation, idempotencyMiddleware, (req, res) => {
+  res.status(201).json({
+    success: true,
+    slot: req.body,
+  });
+});
+
+app.post("/api/v1/other", mockValidation, idempotencyMiddleware, (req, res) => {
+  res.status(201).json({
+    success: true,
+    other: true,
+  });
+});
+
+import { setRedisClient } from "../cache/redisClient.js";
 
 /**
  * Integration tests for the Idempotency Middleware.
@@ -10,8 +39,7 @@ import app from "../index.js";
  *     2. idempotencyMiddleware
  *   Then the route handler responds with 201.
  *
- * The in-memory Redis test double (in src/utils/redis.ts) is used
- * automatically because NODE_ENV=test, so no real Redis is required.
+ * An in-memory Redis test double is injected via `setRedisClient`.
  *
  * Key behaviours under test:
  *   1. Opt-in: No Idempotency-Key → request proceeds normally every time.
@@ -20,6 +48,8 @@ import app from "../index.js";
  *   4. Payload mismatch: Same key, different body → 422.
  *   5. In-flight / race condition: Key is "processing" → 409.
  *   6. Different keys are independent: No cross-contamination.
+ *   7. Cross-endpoint mismatch: Same key, different route → 409.
+ *   8. Deterministic hashing: Object with keys in different order still matches.
  */
 
 const VALID_SLOT = {
@@ -29,6 +59,24 @@ const VALID_SLOT = {
 };
 
 describe("Idempotency Middleware (integration)", () => {
+  const memoryStore = new Map<string, string>();
+
+  beforeAll(() => {
+    setRedisClient({
+      get: async (key: string) => memoryStore.get(key) || null,
+      set: async (key: string, val: string, ex: string, time: number, nx?: string) => {
+        if (nx === "NX" && memoryStore.has(key)) return null;
+        memoryStore.set(key, val);
+        return "OK";
+      },
+      del: async (key: string) => { memoryStore.delete(key); return 1; },
+      quit: async () => "OK",
+    });
+  });
+
+  afterEach(() => {
+    memoryStore.clear();
+  });
   // -------------------------------------------------------------------
   // 1. Opt-in: header absent → middleware is bypassed entirely
   // -------------------------------------------------------------------
@@ -161,36 +209,68 @@ describe("Idempotency Middleware (integration)", () => {
     it("should return 409 Conflict when the key is already locked as 'processing'", async () => {
       const key = "idem-race-001";
 
-      // Prime the test-double store with a "processing" entry by sending a
-      // first request but mimicking it mid-flight:
-      // We achieve this by using a delayed route. Since we don't have one,
-      // we directly use two back-to-back requests where the second arrives
-      // before res.json flushes (both are sequential here, but the in-memory
-      // mock's NX flag means the second SET NX fails → 409).
-      //
-      // Practical note: because Jest runs tests with --runInBand and the
-      // test-double Redis is synchronous, we can also just test via the
-      // real completed response path resetting, but the safest path is
-      // verifying that the middleware itself surfaces 409 when it reads
-      // status:"processing". The validation test below injects this state.
+      // Inject 'processing' state manually
+      memoryStore.set(`idempotency:req:${key}`, JSON.stringify({
+        status: "processing",
+        requestMethod: "POST",
+        requestPath: "/api/v1/slots",
+        requestHash: "dummy",
+      }));
 
-      // Simulate: first request succeeds normally (lock acquired + released)
-      const first = await request(app)
+      const res = await request(app)
         .post("/api/v1/slots")
         .set("Idempotency-Key", key)
         .send(VALID_SLOT);
 
-      expect(first.status).toBe(201);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/actively running/i);
+    });
 
-      // Second identical request: by now the cache holds status:"completed",
-      // so this should replay 201 (not race). Confirm correct "not 409" here.
-      const replay = await request(app)
+    it("should return 409 Conflict when atomic lock fails during Cache Miss", async () => {
+      const key = "idem-race-002";
+      
+      // We trick the mock by putting the key in memoryStore right before `set` is called,
+      // but after `get` is called. We can achieve this by overriding the `get` method
+      // to populate the store.
+      const originalGet = memoryStore.get.bind(memoryStore);
+      let getCalled = false;
+      
+      // Temporary test double injection to intercept
+      setRedisClient({
+        get: async (k: string) => {
+          getCalled = true;
+          return null; // Return null so it acts like a Cache Miss
+        },
+        set: async (k: string, val: string, ex: string, time: number, nx?: string) => {
+          if (getCalled) {
+            // Simulate that another request snagged the lock!
+            return null;
+          }
+          return "OK";
+        },
+        del: async (k: string) => 1,
+        quit: async () => "OK",
+      });
+
+      const res = await request(app)
         .post("/api/v1/slots")
         .set("Idempotency-Key", key)
         .send(VALID_SLOT);
 
-      expect(replay.status).toBe(201);
-      expect(replay.body).toEqual(first.body);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/actively running/i);
+      
+      // Restore the standard test mock
+      setRedisClient({
+        get: async (k: string) => memoryStore.get(k) || null,
+        set: async (k: string, val: string, ex: string, time: number, nx?: string) => {
+          if (nx === "NX" && memoryStore.has(k)) return null;
+          memoryStore.set(k, val);
+          return "OK";
+        },
+        del: async (k: string) => { memoryStore.delete(k); return 1; },
+        quit: async () => "OK",
+      });
     });
   });
 
@@ -248,6 +328,66 @@ describe("Idempotency Middleware (integration)", () => {
 
       expect(good.status).toBe(201);
       expect(good.body.success).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // 8. Cross-endpoint mismatch (Strong Binding)
+  // -------------------------------------------------------------------
+  describe("when the same Idempotency-Key is used on a different endpoint", () => {
+    it("should return 409 Conflict deterministically", async () => {
+      const key = "idem-endpoint-mismatch-001";
+
+      const first = await request(app)
+        .post("/api/v1/slots")
+        .set("Idempotency-Key", key)
+        .send(VALID_SLOT);
+
+      expect(first.status).toBe(201);
+
+      const second = await request(app)
+        .post("/api/v1/other")
+        .set("Idempotency-Key", key)
+        .send(VALID_SLOT);
+
+      expect(second.status).toBe(409);
+      expect(second.body.error).toMatch(/different endpoint/i);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // 9. Stable hashing mechanism
+  // -------------------------------------------------------------------
+  describe("when the payload keys are reordered (Stable Hash)", () => {
+    it("should still recognize it as an exact duplicate even with arrays and nested objects", async () => {
+      const key = "idem-stable-hash-001";
+
+      const first = await request(app)
+        .post("/api/v1/slots")
+        .set("Idempotency-Key", key)
+        .send({
+          professional: "dr-alice",
+          tags: ["urgent", "new"],
+          nested: { b: 2, a: 1 },
+          startTime: "2025-01-01T09:00:00Z",
+          endTime: "2025-01-01T10:00:00Z"
+        });
+
+      expect(first.status).toBe(201);
+
+      const second = await request(app)
+        .post("/api/v1/slots")
+        .set("Idempotency-Key", key)
+        .send({
+          endTime: "2025-01-01T10:00:00Z", // Reordered
+          nested: { a: 1, b: 2 }, // Reordered inner keys
+          professional: "dr-alice",
+          startTime: "2025-01-01T09:00:00Z",
+          tags: ["urgent", "new"]
+        });
+
+      expect(second.status).toBe(201);
+      expect(second.body).toEqual(first.body);
     });
   });
 });

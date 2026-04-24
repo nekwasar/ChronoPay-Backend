@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { getRedisClient } from "../utils/redis.js";
+import { getRedisClient } from "../cache/redisClient.js";
 import { generateRequestHash } from "../utils/hash.js";
 
 const IDEMPOTENCY_EXPIRATION = 86400; // 24 hours
@@ -25,6 +25,15 @@ export const idempotencyMiddleware = async (
 
     if (existingData) {
       const parsedData = JSON.parse(existingData);
+
+      // Endpoint mismatch check
+      if (parsedData.requestMethod !== req.method || parsedData.requestPath !== req.originalUrl) {
+        res.status(409).json({
+          success: false,
+          error: "Conflict: Idempotency-Key used on a different endpoint.",
+        });
+        return;
+      }
 
       // Concurrent request check
       if (parsedData.status === "processing") {
@@ -54,6 +63,8 @@ export const idempotencyMiddleware = async (
     // Cache Miss: Safely attempt to claim the atomic lock using NX (Not Exists)
     const processingState = {
       status: "processing",
+      requestMethod: req.method,
+      requestPath: req.originalUrl,
       requestHash: incomingHash,
     };
     
@@ -81,6 +92,8 @@ export const idempotencyMiddleware = async (
       // Lock in final resolved response values and write passively
       const completedState = {
         status: "completed",
+        requestMethod: req.method,
+        requestPath: req.originalUrl,
         requestHash: incomingHash,
         statusCode: res.statusCode,
         responseBody: body,

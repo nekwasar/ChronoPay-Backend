@@ -35,7 +35,7 @@ const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
  */
 export interface RedisClient {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string, exMode: "EX", ttl: number): Promise<unknown>;
+  set(key: string, value: string, exMode: "EX", ttl: number, nxMode?: "NX"): Promise<unknown>;
   del(key: string): Promise<unknown>;
   quit(): Promise<unknown>;
 }
