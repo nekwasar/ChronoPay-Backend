@@ -1,253 +1,346 @@
-import request from "supertest";
-import app from "../index.js";
+import { jest } from "@jest/globals";
+import type { Request, Response } from "express";
+import type { RedisClient } from "../cache/redisClient.js";
+import { type IdempotencyRedisEncryptionConfig } from "../config/env.js";
+import { generateRequestHash } from "../utils/hash.js";
+import {
+  createIdempotencyPayloadCodec,
+  IdempotencyPayloadDecryptError,
+  setIdempotencyEncryptionConfigForTests,
+} from "../utils/idempotencyPayloadCodec.js";
+import { mockNext, mockRequest, mockResponse } from "../utils/test-helpers.js";
 
-/**
- * Integration tests for the Idempotency Middleware.
- *
- * Architecture context:
- *   POST /api/v1/slots applies two middleware in order:
- *     1. validateRequiredFields(["professional", "startTime", "endTime"])
- *     2. idempotencyMiddleware
- *   Then the route handler responds with 201.
- *
- * The in-memory Redis test double (in src/utils/redis.ts) is used
- * automatically because NODE_ENV=test, so no real Redis is required.
- *
- * Key behaviours under test:
- *   1. Opt-in: No Idempotency-Key → request proceeds normally every time.
- *   2. Cache miss (first request): Lock acquired → 201 returned.
- *   3. Exact duplicate: Returns the same cached response (status + body).
- *   4. Payload mismatch: Same key, different body → 422.
- *   5. In-flight / race condition: Key is "processing" → 409.
- *   6. Different keys are independent: No cross-contamination.
- */
+const { setRedisClient } = await import("../cache/redisClient.js");
+const { idempotencyMiddleware } = await import("../middleware/idempotency.js");
 
-const VALID_SLOT = {
-  professional: "dr-alice",
-  startTime: "2025-01-01T09:00:00Z",
-  endTime: "2025-01-01T10:00:00Z",
-};
+function makeRedisClient(
+  overrides: Partial<jest.Mocked<RedisClient>> = {},
+): jest.Mocked<RedisClient> {
+  return {
+    get: jest.fn<RedisClient["get"]>().mockResolvedValue(null),
+    set: jest.fn<RedisClient["set"]>().mockResolvedValue("OK"),
+    del: jest.fn<RedisClient["del"]>().mockResolvedValue(1),
+    quit: jest.fn<RedisClient["quit"]>().mockResolvedValue("OK"),
+    ...overrides,
+  };
+}
 
-describe("Idempotency Middleware (integration)", () => {
-  // -------------------------------------------------------------------
-  // 1. Opt-in: header absent → middleware is bypassed entirely
-  // -------------------------------------------------------------------
-  describe("when no Idempotency-Key header is supplied", () => {
-    it("should process each request independently and always return 201", async () => {
-      const first = await request(app)
-        .post("/api/v1/slots")
-        .send(VALID_SLOT);
+function makeEncryptionConfig(): IdempotencyRedisEncryptionConfig {
+  const activeKey = {
+    id: "primary-2026-04",
+    value: Buffer.alloc(32, 5),
+  };
 
-      expect(first.status).toBe(201);
-      expect(first.body.success).toBe(true);
+  return {
+    enabled: true,
+    algorithm: "aes-256-gcm",
+    activeKey,
+    decryptionKeys: [activeKey],
+  };
+}
 
-      // A second identical request with no key must also succeed (no 409/422)
-      const second = await request(app)
-        .post("/api/v1/slots")
-        .send(VALID_SLOT);
+describe("idempotencyMiddleware", () => {
+  beforeEach(() => {
+    setRedisClient(null);
+    setIdempotencyEncryptionConfigForTests(null);
+  });
 
-      expect(second.status).toBe(201);
+  afterEach(() => {
+    setRedisClient(null);
+    setIdempotencyEncryptionConfigForTests(null);
+  });
+
+  it("bypasses idempotency when the header is missing", async () => {
+    const redis = makeRedisClient();
+    setRedisClient(redis);
+    const req = mockRequest({
+      method: "POST",
+      originalUrl: "/api/v1/slots",
+      header: jest.fn().mockReturnValue(undefined),
+    }) as Request;
+    const res = mockResponse() as Response;
+    const next = mockNext();
+
+    await idempotencyMiddleware(req, res, next);
+
+    expect(next).toHaveBeenCalledWith();
+    expect(redis.get).not.toHaveBeenCalled();
+  });
+
+  it("bypasses idempotency when Redis is unavailable", async () => {
+    setRedisClient(null);
+    const req = mockRequest({
+      method: "POST",
+      originalUrl: "/api/v1/slots",
+      body: { amount: 100 },
+      header: jest.fn().mockReturnValue("idem-001"),
+    }) as Request;
+    const res = mockResponse() as Response;
+    const next = mockNext();
+
+    await idempotencyMiddleware(req, res, next);
+
+    expect(next).toHaveBeenCalledWith();
+  });
+
+  it("replays a stored completed response", async () => {
+    const requestHash = generateRequestHash("POST", "/api/v1/slots", { amount: 100 });
+    const codec = createIdempotencyPayloadCodec({
+      enabled: false,
+      algorithm: "aes-256-gcm",
+      activeKey: null,
+      decryptionKeys: [],
+    });
+    const redis = makeRedisClient({
+      get: jest.fn<RedisClient["get"]>().mockResolvedValue(
+        codec.serialize({
+          status: "completed",
+          requestHash,
+          statusCode: 201,
+          responseBody: { success: true, slotId: 1 },
+        }),
+      ),
+    });
+    setRedisClient(redis);
+    const req = mockRequest({
+      method: "POST",
+      originalUrl: "/api/v1/slots",
+      body: { amount: 100 },
+      header: jest.fn().mockReturnValue("idem-002"),
+    }) as Request;
+    const res = mockResponse() as Response;
+    const next = mockNext();
+
+    await idempotencyMiddleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(res.json).toHaveBeenCalledWith({ success: true, slotId: 1 });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("treats plaintext entries as readable during encrypted rollout", async () => {
+    const requestHash = generateRequestHash("POST", "/api/v1/slots", { amount: 100 });
+    const redis = makeRedisClient({
+      get: jest.fn<RedisClient["get"]>().mockResolvedValue(
+        JSON.stringify({
+          status: "completed",
+          requestHash,
+          statusCode: 201,
+          responseBody: { success: true, legacy: true },
+        }),
+      ),
+    });
+    setRedisClient(redis);
+    setIdempotencyEncryptionConfigForTests(makeEncryptionConfig());
+    const req = mockRequest({
+      method: "POST",
+      originalUrl: "/api/v1/slots",
+      body: { amount: 100 },
+      header: jest.fn().mockReturnValue("idem-003"),
+    }) as Request;
+    const res = mockResponse() as Response;
+    const next = mockNext();
+
+    await idempotencyMiddleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(res.json).toHaveBeenCalledWith({ success: true, legacy: true });
+  });
+
+  it("returns 422 when the same key is reused with a different payload", async () => {
+    const redis = makeRedisClient({
+      get: jest.fn<RedisClient["get"]>().mockResolvedValue(
+        JSON.stringify({
+          status: "completed",
+          requestHash: "different-hash",
+          statusCode: 201,
+          responseBody: { success: true },
+        }),
+      ),
+    });
+    setRedisClient(redis);
+    const req = mockRequest({
+      method: "POST",
+      originalUrl: "/api/v1/slots",
+      body: { amount: 100 },
+      header: jest.fn().mockReturnValue("idem-004"),
+    }) as Request;
+    const res = mockResponse() as Response;
+    const next = mockNext();
+
+    await idempotencyMiddleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(res.json).toHaveBeenCalledWith({
+      success: false,
+      error: "Unprocessable Entity: Idempotency-Key used with different payload.",
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when the key is already processing", async () => {
+    const redis = makeRedisClient({
+      get: jest.fn<RedisClient["get"]>().mockResolvedValue(
+        JSON.stringify({
+          status: "processing",
+          requestHash: "ignored",
+        }),
+      ),
+    });
+    setRedisClient(redis);
+    const req = mockRequest({
+      method: "POST",
+      originalUrl: "/api/v1/slots",
+      body: { amount: 100 },
+      header: jest.fn().mockReturnValue("idem-005"),
+    }) as Request;
+    const res = mockResponse() as Response;
+    const next = mockNext();
+
+    await idempotencyMiddleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith({
+      success: false,
+      error: "Conflict: This transaction is actively running.",
     });
   });
 
-  // -------------------------------------------------------------------
-  // 2. Cache miss (first request with a fresh key)
-  // -------------------------------------------------------------------
-  describe("when a fresh Idempotency-Key is provided (cache miss)", () => {
-    it("should acquire the lock and return 201 with the slot data", async () => {
-      const res = await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", "idem-fresh-001")
-        .send(VALID_SLOT);
+  it("stores processing and completed states as encrypted envelopes when enabled", async () => {
+    const redis = makeRedisClient();
+    setRedisClient(redis);
+    setIdempotencyEncryptionConfigForTests(makeEncryptionConfig());
+    const req = mockRequest({
+      method: "POST",
+      originalUrl: "/api/v1/slots",
+      body: { cardLast4: "4242" },
+      header: jest.fn().mockReturnValue("idem-006"),
+    }) as Request;
+    const res = mockResponse() as Response;
+    const next = mockNext();
 
-      expect(res.status).toBe(201);
-      expect(res.body.success).toBe(true);
-      expect(res.body.slot).toMatchObject({
-        professional: VALID_SLOT.professional,
-        startTime: VALID_SLOT.startTime,
-        endTime: VALID_SLOT.endTime,
-      });
-    });
+    await idempotencyMiddleware(req, res, next);
+
+    expect(next).toHaveBeenCalledWith();
+    expect(redis.set).toHaveBeenNthCalledWith(
+      1,
+      "idempotency:req:idem-006",
+      expect.stringContaining("\"enc\""),
+      "EX",
+      86400,
+      "NX",
+    );
+    expect(redis.set.mock.calls[0]?.[1]).not.toContain("4242");
+
+    res.status(201);
+    res.json({ success: true, paymentId: "pay_123" });
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(redis.set).toHaveBeenNthCalledWith(
+      2,
+      "idempotency:req:idem-006",
+      expect.stringContaining("\"enc\""),
+      "EX",
+      86400,
+    );
+    expect(redis.set.mock.calls[1]?.[1]).not.toContain("pay_123");
   });
 
-  // -------------------------------------------------------------------
-  // 3. Exact duplicate (happy path replay)
-  // -------------------------------------------------------------------
-  describe("when the same Idempotency-Key and payload are sent twice", () => {
-    it("should replay the exact cached response on the second request", async () => {
-      const key = "idem-duplicate-001";
-
-      const first = await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", key)
-        .send(VALID_SLOT);
-
-      expect(first.status).toBe(201);
-
-      const second = await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", key)
-        .send(VALID_SLOT);
-
-      // Status and body must be identical to the first response
-      expect(second.status).toBe(201);
-      expect(second.body).toEqual(first.body);
+  it("returns 409 when another request wins the lock race", async () => {
+    const redis = makeRedisClient({
+      set: jest
+        .fn<RedisClient["set"]>()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue("OK"),
     });
+    setRedisClient(redis);
+    const req = mockRequest({
+      method: "POST",
+      originalUrl: "/api/v1/slots",
+      body: { amount: 100 },
+      header: jest.fn().mockReturnValue("idem-006b"),
+    }) as Request;
+    const res = mockResponse() as Response;
+    const next = mockNext();
+
+    await idempotencyMiddleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith({
+      success: false,
+      error: "Conflict: This transaction is actively running.",
+    });
+    expect(next).not.toHaveBeenCalled();
   });
 
-  // -------------------------------------------------------------------
-  // 4. Payload mismatch → 422
-  // -------------------------------------------------------------------
-  describe("when the same Idempotency-Key is reused with a different payload", () => {
-    it("should return 422 Unprocessable Entity", async () => {
-      const key = "idem-mismatch-001";
-
-      // Establish the key with original payload
-      const first = await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", key)
-        .send(VALID_SLOT);
-
-      expect(first.status).toBe(201);
-
-      // Attempt to reuse the same key with a different payload
-      const second = await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", key)
-        .send({
-          ...VALID_SLOT,
-          professional: "dr-bob", // Different field value!
-        });
-
-      expect(second.status).toBe(422);
-      expect(second.body.success).toBe(false);
-      expect(second.body.error).toMatch(/different payload/i);
+  it("logs but does not fail the response when persisting the completed state fails", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const redis = makeRedisClient({
+      set: jest
+        .fn<RedisClient["set"]>()
+        .mockResolvedValueOnce("OK")
+        .mockRejectedValueOnce(new Error("redis write failed")),
     });
+    setRedisClient(redis);
+    const req = mockRequest({
+      method: "POST",
+      originalUrl: "/api/v1/slots",
+      body: { amount: 100 },
+      header: jest.fn().mockReturnValue("idem-006c"),
+    }) as Request;
+    const res = mockResponse() as Response;
+    const next = mockNext();
 
-    it("should return 422 even if only the body structure changes", async () => {
-      const key = "idem-mismatch-002";
+    await idempotencyMiddleware(req, res, next);
+    res.status(201);
+    res.json({ success: true });
+    await new Promise((resolve) => setImmediate(resolve));
 
-      await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", key)
-        .send(VALID_SLOT);
-
-      const second = await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", key)
-        .send({
-          ...VALID_SLOT,
-          startTime: "2025-06-01T09:00:00Z", // Different time
-        });
-
-      expect(second.status).toBe(422);
-    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Failed to persist idempotency response:",
+      "redis write failed",
+    );
+    errorSpy.mockRestore();
   });
 
-  // -------------------------------------------------------------------
-  // 5. Race condition / in-flight request → 409
-  //    We simulate this by:
-  //    a) Sending the first request and intentionally NOT completing it
-  //       (the in-memory store test double will store status "processing"
-  //        if we call set with NX before the route handler calls res.json)
-  //    b) The test double's NX semantics: once the "processing" entry is
-  //       written, a second concurrent SET NX returns null → 409.
-  //
-  //    To probe this deterministically without true concurrency we
-  //    directly invoke the middleware against a mock res that never
-  //    calls json, then fire the real HTTP request.
-  // -------------------------------------------------------------------
-  describe("when a concurrent in-flight request is detected", () => {
-    it("should return 409 Conflict when the key is already locked as 'processing'", async () => {
-      const key = "idem-race-001";
-
-      // Prime the test-double store with a "processing" entry by sending a
-      // first request but mimicking it mid-flight:
-      // We achieve this by using a delayed route. Since we don't have one,
-      // we directly use two back-to-back requests where the second arrives
-      // before res.json flushes (both are sequential here, but the in-memory
-      // mock's NX flag means the second SET NX fails → 409).
-      //
-      // Practical note: because Jest runs tests with --runInBand and the
-      // test-double Redis is synchronous, we can also just test via the
-      // real completed response path resetting, but the safest path is
-      // verifying that the middleware itself surfaces 409 when it reads
-      // status:"processing". The validation test below injects this state.
-
-      // Simulate: first request succeeds normally (lock acquired + released)
-      const first = await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", key)
-        .send(VALID_SLOT);
-
-      expect(first.status).toBe(201);
-
-      // Second identical request: by now the cache holds status:"completed",
-      // so this should replay 201 (not race). Confirm correct "not 409" here.
-      const replay = await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", key)
-        .send(VALID_SLOT);
-
-      expect(replay.status).toBe(201);
-      expect(replay.body).toEqual(first.body);
+  it("surfaces decryption errors when configured keys cannot read an existing payload", async () => {
+    const requestHash = generateRequestHash("POST", "/api/v1/slots", { amount: 100 });
+    const ciphertext = createIdempotencyPayloadCodec(makeEncryptionConfig()).serialize({
+      status: "completed",
+      requestHash,
+      statusCode: 201,
+      responseBody: { success: true },
     });
-  });
-
-  // -------------------------------------------------------------------
-  // 6. Key isolation: different keys are fully independent
-  // -------------------------------------------------------------------
-  describe("key isolation", () => {
-    it("should treat different Idempotency-Keys as completely independent requests", async () => {
-      const payloadA = { ...VALID_SLOT, professional: "dr-alice" };
-      const payloadB = { ...VALID_SLOT, professional: "dr-bob" };
-
-      const resA = await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", "idem-iso-A")
-        .send(payloadA);
-
-      const resB = await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", "idem-iso-B")
-        .send(payloadB);
-
-      expect(resA.status).toBe(201);
-      expect(resB.status).toBe(201);
-
-      // Bodies are distinct: each key cached its own response
-      expect(resA.body.slot.professional).toBe("dr-alice");
-      expect(resB.body.slot.professional).toBe("dr-bob");
+    const redis = makeRedisClient({
+      get: jest.fn<RedisClient["get"]>().mockResolvedValue(ciphertext),
     });
-  });
-
-  // -------------------------------------------------------------------
-  // 7. Edge case: validation runs BEFORE idempotency
-  //    An invalid body should never consume an idempotency slot.
-  // -------------------------------------------------------------------
-  describe("interaction with validation middleware", () => {
-    it("should return 400 (not store anything in Redis) if required fields are missing", async () => {
-      const key = "idem-validation-001";
-
-      // Send invalid payload
-      const bad = await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", key)
-        .send({ professional: "dr-alice" }); // missing startTime + endTime
-
-      expect(bad.status).toBe(400);
-      expect(bad.body.success).toBe(false);
-
-      // Now send a valid request with the SAME key.
-      // If validation truly short-circuits before idempotency, the key
-      // should be unclaimed and the valid request should succeed.
-      const good = await request(app)
-        .post("/api/v1/slots")
-        .set("Idempotency-Key", key)
-        .send(VALID_SLOT);
-
-      expect(good.status).toBe(201);
-      expect(good.body.success).toBe(true);
+    setRedisClient(redis);
+    setIdempotencyEncryptionConfigForTests({
+      enabled: true,
+      algorithm: "aes-256-gcm",
+      activeKey: {
+        id: "wrong-2026-05",
+        value: Buffer.alloc(32, 6),
+      },
+      decryptionKeys: [
+        {
+          id: "wrong-2026-05",
+          value: Buffer.alloc(32, 6),
+        },
+      ],
     });
+    const req = mockRequest({
+      method: "POST",
+      originalUrl: "/api/v1/slots",
+      body: { amount: 100 },
+      header: jest.fn().mockReturnValue("idem-007"),
+    }) as Request;
+    const res = mockResponse() as Response;
+    const next = mockNext();
+
+    await idempotencyMiddleware(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.any(IdempotencyPayloadDecryptError));
   });
 });
