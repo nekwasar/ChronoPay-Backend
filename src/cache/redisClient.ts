@@ -37,6 +37,7 @@ export interface RedisClient {
   get(key: string): Promise<string | null>;
   set(key: string, value: string, exMode: "EX", ttl: number): Promise<unknown>;
   del(key: string): Promise<unknown>;
+  keys(pattern: string): Promise<string[]>;
   quit(): Promise<unknown>;
 }
 
