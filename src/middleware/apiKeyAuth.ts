@@ -24,6 +24,8 @@ export function requireApiKey(expectedApiKey?: string) {
       });
     }
 
+    (req as any).logContext = { apiKeyId: "validated" };
+
     next();
   };
 }

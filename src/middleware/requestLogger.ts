@@ -3,6 +3,13 @@ import { Request, Response, NextFunction } from "express";
 import { logger, LogLevel } from "../utils/logger.js";
 import { IncomingMessage, ServerResponse } from "http";
 import type { LevelWithSilent } from "pino";
+import {
+  buildRequestLogContext,
+  addIdentityToContext,
+  addResponseData,
+  extractIdentity,
+  RequestLogContext,
+} from "../utils/logContext.js";
 
 /**
  * Extended Express request interface to include timing and custom properties
@@ -10,6 +17,7 @@ import type { LevelWithSilent } from "pino";
 declare module "express" {
   interface Request {
     startTime?: number;
+    logContext?: RequestLogContext;
   }
 }
 
@@ -94,6 +102,7 @@ export const createRequestLogger = () => {
     return (req: Request, res: Response, next: NextFunction) => {
       // Minimal request processing for tests
       (req as any).startTime = Date.now();
+      (req as any).logContext = buildRequestLogContext(req);
       next();
     };
   }
@@ -188,6 +197,25 @@ export const createRequestLogger = () => {
      * Timestamp format for logs
      */
     timestamp: () => `,"time":"${new Date().toISOString()}"`,
+
+    /**
+     * Add standardized log fields to every request
+     */
+    customProps: (req: Request, res: Response) => {
+      const baseContext = buildRequestLogContext(req);
+      const identity = extractIdentity(req);
+      const contextWithIdentity = addIdentityToContext(baseContext, identity);
+      
+      return {
+        requestId: contextWithIdentity.requestId,
+        route: contextWithIdentity.route,
+        method: contextWithIdentity.method,
+        userId: contextWithIdentity.userId,
+        apiKeyId: contextWithIdentity.apiKeyId,
+        ip: contextWithIdentity.ip,
+        userAgent: contextWithIdentity.userAgent,
+      };
+    },
   };
 
   return pinoHttp(options);
@@ -205,6 +233,10 @@ export const errorLoggerMiddleware = (
 ) => {
   const requestId = req.id || "unknown";
   const duration = calculateDuration(req.startTime);
+  const baseContext = buildRequestLogContext(req);
+  const identity = extractIdentity(req);
+  const contextWithIdentity = addIdentityToContext(baseContext, identity);
+  const finalContext = addResponseData(contextWithIdentity, res.statusCode, duration);
 
   logger.error(
     {
@@ -214,20 +246,15 @@ export const errorLoggerMiddleware = (
         stack: err.stack,
         code: err.code,
       },
-      request: {
-        id: requestId,
-        method: req.method,
-        url: req.originalUrl || req.url,
-        headers: req.headers,
-        body: req.body,
-        query: req.query,
-        params: req.params,
-      },
-      response: {
-        statusCode: res.statusCode,
-      },
-      duration_ms: duration,
-      timestamp: new Date().toISOString(),
+      requestId: finalContext.requestId,
+      route: finalContext.route,
+      method: finalContext.method,
+      userId: finalContext.userId,
+      apiKeyId: finalContext.apiKeyId,
+      ip: finalContext.ip,
+      userAgent: finalContext.userAgent,
+      status: finalContext.status,
+      duration: finalContext.duration,
     },
     "Unhandled error occurred"
   );
