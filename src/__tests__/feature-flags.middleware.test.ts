@@ -22,8 +22,8 @@ describe("feature flag middleware", () => {
 
     featureFlagContextMiddleware(req, res, next);
 
-    expect(typeof req.flags.isEnabled).toBe("function");
-    expect(typeof req.flags.list).toBe("function");
+    expect(typeof req.flags?.isEnabled).toBe("function");
+    expect(typeof req.flags?.list).toBe("function");
     expect(next).toHaveBeenCalledTimes(1);
   });
 

@@ -6,6 +6,15 @@ import {
 } from "../flags/index.js";
 import type { FeatureFlagName } from "../flags/index.js";
 
+// Extend Express Request to include flags
+declare global {
+  namespace Express {
+    interface Request {
+      flags?: ReturnType<typeof getFeatureFlagAccessor>;
+    }
+  }
+}
+
 export function featureFlagContextMiddleware(
   req: Request,
   _res: Response,

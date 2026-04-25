@@ -3,6 +3,16 @@ import { PaginatedSlots, Slot as PaginatedSlot } from "../types.js";
 import { getSlotsCount, getSlotsPage } from "../repositories/slotRepository.js";
 import { InMemoryCache } from "../cache/inMemoryCache.js";
 
+// Internal Slot type for SlotService
+export interface Slot {
+  id: number;
+  professional: string;
+  startTime: number;
+  endTime: number;
+  createdAt?: string;
+  _internalNote?: string;
+}
+
 const MAX_LIMIT = 100;
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 10;

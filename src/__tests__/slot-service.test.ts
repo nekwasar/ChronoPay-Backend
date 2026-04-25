@@ -10,7 +10,7 @@ describe.skip("SlotService", () => {
 
   beforeEach(() => {
     currentTime = Date.parse("2026-03-28T00:00:00.000Z");
-    service = new SlotService(() => new Date(currentTime));
+    service = new SlotService(undefined, () => new Date(currentTime));
   });
 
   it("creates slots and returns a sorted list", async () => {
@@ -30,7 +30,7 @@ describe.skip("SlotService", () => {
 
     const list = (await service.listSlots()).slots;
 
-    expect(list.map((slot) => slot.id)).toEqual([first.id, second.id]);
+    expect(list.map((slot: any) => slot.id)).toEqual([first.id, second.id]);
     list[0].professional = "tampered";
     expect((await service.listSlots()).slots[0].professional).toBe("alice");
   });

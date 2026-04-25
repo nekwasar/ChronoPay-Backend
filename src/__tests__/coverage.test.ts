@@ -22,8 +22,8 @@ describe.skip("RBAC and Validation Coverage", () => {
 
     it("should cover 500 catch block in rbac", () => {
       const middleware = requireRole(["admin"]);
-      const req = { header: () => { throw new Error(); } };
-      const res = { status: (s: number) => ({ json: (j: any) => ({ s, j }) }) };
+      const req = { header: () => { throw new Error(); } } as any;
+      const res = { status: (s: number) => ({ json: (j: any) => ({ s, j }) }) } as any;
       const result: any = middleware(req, res, () => {});
       expect(result.s).toBe(500);
     });

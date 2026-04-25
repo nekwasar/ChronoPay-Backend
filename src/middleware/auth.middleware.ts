@@ -13,6 +13,7 @@ export enum UserRole {
 }
 
 export interface AuthenticatedUser {
+  [key: string]: unknown;
   id: string;
   email: string;
   role: UserRole;

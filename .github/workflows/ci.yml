@@ -26,6 +26,9 @@ jobs:
         if: github.event_name != 'pull_request'
         run: npm run build
 
+      - name: Validate migrations
+        run: npm run migrate validate
+
       - name: Run tests
         env:
           NODE_ENV: test
