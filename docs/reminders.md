@@ -1,90 +1,119 @@
-# Reminder Delivery
+# Reminder Scheduling: Timezone Strategy
 
 ## Overview
 
-ChronoPay schedules slot reminders and delivers them via a polling worker. Deduplication prevents duplicate deliveries when workers retry or run concurrently.
+All reminder times are stored and processed in **UTC**. When a caller supplies
+a timezone identifier it is validated and resolved for contextual use, but the
+internal schedule is always UTC-based, which eliminates DST-related off-by-one
+errors at trigger time.
 
-## Architecture
+## Default timezone
+
+When no timezone is provided, the system defaults to `UTC`.
+
+## Input fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `slotId` | positive integer | yes | The slot to attach reminders to |
+| `startTime` | integer (epoch ms) | yes | UTC epoch milliseconds for the slot start |
+| `timezone` | string (IANA) | no | Caller's intended timezone; validated but does not alter UTC storage |
+
+## Timezone validation
+
+Timezones are validated using the platform `Intl.DateTimeFormat` API — no
+third-party library is required. Only IANA timezone database identifiers are
+accepted.
+
+### Accepted examples
 
 ```
-reminderScheduler  (setInterval every 5 s)
-  └── processReminders()
-        ├── ReminderStore.getDueReminders()
-        ├── claimDelivery(id, triggerAt)   ← Redis SET NX EX
-        │     true  → deliver, mark sent
-        │     false → skip (already claimed)
-        └── reminderMetrics.increment(delivered | skipped | failed)
+UTC
+America/New_York
+Europe/London
+Asia/Tokyo
+Australia/Sydney
+Pacific/Auckland
 ```
 
-## Deduplication
+### Rejected inputs
 
-### Key format
+- Empty or whitespace-only strings
+- Unrecognised identifiers (e.g. `Fake/Zone`, `America/NotACity`)
+- Any non-string value
 
-```
-reminder:dedup:<reminderId>:<triggerAt>
-```
+> **Note on abbreviations:** Three-letter abbreviations such as `PST` or `CST`
+> are not reliably unique across regions and their support varies by platform.
+> Always use canonical IANA identifiers.
 
-- Contains no PII — only opaque numeric identifiers
-- TTL: 25 hours (covers any realistic retry window)
+## Scheduling constraints
 
-### Claim protocol
+API callers should run `validateReminderScheduleInput` before calling the
+service layer. It enforces the following:
 
-`claimDelivery(reminderId, triggerAt)` issues a Redis `SET key "1" EX 90000 NX`:
+| Constraint | Value | Reason |
+|-----------|-------|--------|
+| Minimum lead time | 60 seconds | Prevents reminders that would fire almost immediately |
+| Maximum look-ahead | 365 days | Guards against unit-mismatch bugs (seconds vs milliseconds) |
 
-- Returns `true` → this worker owns the delivery; proceed
-- Returns `false` → another worker already claimed it; skip
+## DST handling
 
-The `NX` flag makes the claim atomic — no race condition between concurrent workers.
+Because `startTime` is a UTC epoch millisecond value, DST transitions have no
+effect on trigger accuracy — there is no wall-clock ambiguity in UTC.
 
-### Worker crash / retry safety
+### Why UTC-first avoids DST bugs
 
-If a worker crashes after claiming but before marking the reminder `sent`, the Redis key persists and blocks re-delivery for the TTL window. The reminder remains `pending` in the store and will be retried on the next poll cycle — but `claimDelivery` will return `false`, so it is skipped until the TTL expires.
+Wall-clock times in DST-observing timezones can be:
 
-For production use, consider a two-phase approach: claim → deliver → release-or-extend, with a shorter TTL and explicit release on failure.
+- **Ambiguous** (fall-back): e.g. 1:30 AM Eastern exists twice on the first
+  Sunday of November. A wall-clock time alone cannot distinguish the two.
+- **Non-existent** (spring-forward): e.g. 2:30 AM Eastern does not exist on
+  the second Sunday of March. Scheduling against it would silently drift.
 
-## Metrics
+By accepting `startTime` as UTC epoch milliseconds neither ambiguity arises,
+regardless of the caller's local clock.
 
-`reminderMetrics` (in-memory, per-process) exposes:
+### DST transition detection
 
-| Counter | Meaning |
-|---|---|
-| `delivered` | Reminder sent successfully |
-| `skipped` | Duplicate — another worker already claimed |
-| `failed` | Delivery failed after `MAX_RETRIES` attempts |
+The `isInDSTTransition` utility returns `true` when a UTC instant falls within
+the clock-change window of a given IANA timezone. Use it to warn callers whose
+requested time is near a DST boundary:
 
-```ts
-import { reminderMetrics } from "./scheduler/reminderMetrics.js";
+```typescript
+import {
+  isInDSTTransition,
+  isValidIANATimezone,
+} from "../validation/reminderValidation.js";
 
-const { delivered, skipped, failed } = reminderMetrics.snapshot();
-```
+const userTimezone = "America/New_York";
+const slotStart = 1730620800000; // Nov 3 2024 06:00 UTC — fall-back hour
 
-## Configuration
-
-| Constant | Value | Description |
-|---|---|---|
-| `MAX_RETRIES` | 3 | Max delivery attempts before marking failed |
-| `DEDUP_TTL_SECONDS` | 90000 (25 h) | Redis key TTL |
-| Scheduler interval | 5000 ms | How often the worker polls |
-
-## Security
-
-- Dedup keys contain only `reminderId` (integer) and `triggerAt` (Unix ms timestamp) — no user IDs, phone numbers, or other PII
-- Redis keys expire automatically; no manual cleanup required
-- The in-memory test double (`NODE_ENV=test`) mirrors the NX semantics exactly, so tests are deterministic without a real Redis instance
-
-## Testing
-
-```bash
-npm test -- --testPathPattern="reminder.test"
+if (isValidIANATimezone(userTimezone) && isInDSTTransition(slotStart, userTimezone)) {
+  // Optionally warn the caller that the local time is ambiguous
+}
 ```
 
-Covered scenarios:
+## Full validation flow (API route example)
 
-- `dedupKey` format and uniqueness
-- `claimDelivery` atomic claim / duplicate block
-- Normal delivery (status → sent, metric incremented)
-- Duplicate skip (pre-claimed key)
-- Concurrent workers (Promise.all) — exactly one delivery
-- Worker crash / sequential retry
-- Retry storm (N=5 concurrent workers → 1 delivered, N-1 skipped)
-- Metrics: increment, snapshot immutability, reset
+```typescript
+import { validateReminderScheduleInput } from "../validation/reminderValidation.js";
+import { scheduleReminders } from "../services/reminderService.js";
+
+// In your route handler:
+const { slotId, startTime, timezone } = req.body;
+const check = validateReminderScheduleInput(slotId, startTime, timezone);
+
+if (!check.valid) {
+  return res.status(400).json({ success: false, errors: check.errors });
+}
+
+// check.resolvedTimezone is "UTC" if none was provided
+scheduleReminders(check.normalizedStartTime!, check.normalizedStartTime!, check.resolvedTimezone);
+```
+
+## Security notes
+
+- Validation error messages reference field names and constraint descriptions
+  only — raw user-supplied values are **never** echoed in responses.
+- Invalid input is rejected entirely before any store interaction occurs.
+- Whitespace-only timezone strings are rejected the same as empty strings.

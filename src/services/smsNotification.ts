@@ -1,13 +1,13 @@
-import { RetryPolicy } from "../utils/retry-policy.js";
-import { redactPhone } from "../utils/redact.js";
-
-// ─── Result / Error types ────────────────────────────────────────────────────
+import { withTimeout, withRetry } from "../utils/outbound-helper.js";
+import { timeoutConfig } from "../config/timeouts.js";
+import { OutboundBadResponseError } from "../errors/OutboundErrors.js";
 
 export interface SmsSendResult {
   success: boolean;
   provider?: string;
   providerMessageId?: string;
   error?: string;
+  statusCode?: number;
 }
 
 /** Thrown by providers to signal a permanent (non-retryable) failure. */
@@ -21,8 +21,8 @@ export class PermanentSmsError extends Error {
 // ─── Provider interface ──────────────────────────────────────────────────────
 
 export interface SmsProvider {
-  readonly name: string;
-  sendSms(to: string, message: string): Promise<SmsSendResult>;
+  name: string;
+  sendSms(to: string, message: string, signal?: AbortSignal): Promise<SmsSendResult>;
 }
 
 // ─── Retry / failover helpers ────────────────────────────────────────────────
@@ -96,23 +96,26 @@ export class SmsNotificationService {
       };
     }
 
-    return this._sendWithFailover(normalizedTo, normalizedMessage);
-  }
-
-  /** Try each provider in order; retry transient errors per provider before failing over. */
-  private async _sendWithFailover(to: string, message: string): Promise<SmsSendResult> {
-    let lastError: string | undefined;
-
-    for (const provider of this.providers) {
-      try {
-        const result = await this.retry.execute(
-          () => this._callProvider(provider, to, message),
-          isRetryable,
-        );
-
-        if (result.success) {
-          return { ...result, provider: provider.name };
-        }
+    try {
+      const result = await withRetry(
+        async (attempt) => {
+          return await withTimeout(
+            async (signal) => {
+              const res = await this.provider.sendSms(normalizedTo, normalizedMessage, signal);
+              
+              // Map provider errors to internal codes if needed
+              if (!res.success && res.statusCode && res.statusCode >= 400 && res.statusCode < 500 && res.statusCode !== 429) {
+                throw new OutboundBadResponseError(this.provider.name, res.error);
+              }
+              
+              return res;
+            },
+            timeoutConfig.http.smsMs,
+            `sms-provider:${this.provider.name}`
+          );
+        },
+        { serviceName: `sms-provider:${this.provider.name}` }
+      );
 
         // Provider returned a non-throwing failure — treat as permanent for this provider
         lastError = result.error ?? "Provider returned failure";
@@ -125,19 +128,19 @@ export class SmsNotificationService {
       }
     }
 
-    return { success: false, error: lastError ?? "All SMS providers failed" };
-  }
-
-  /** Wraps a single provider call; converts non-throwing failures to thrown errors for retry. */
-  private async _callProvider(
-    provider: SmsProvider,
-    to: string,
-    message: string,
-  ): Promise<SmsSendResult> {
-    const result = await provider.sendSms(to, message);
-    if (!result.success) {
-      // Treat provider-level failures as thrown errors so RetryPolicy can decide
-      throw new Error(result.error ?? "Provider returned failure");
+      return {
+        success: true,
+        provider: this.provider.name,
+        providerMessageId: result.providerMessageId,
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? `SMS provider exception: ${error.message}`
+            : "SMS provider exception",
+      };
     }
     return result;
   }
@@ -219,17 +222,36 @@ export class InMemorySmsProvider implements SmsProvider {
     this.failOnRecipient = failOnRecipient ?? /^\+12000000000$/;
   }
 
-  async sendSms(to: string, message: string): Promise<SmsSendResult> {
+  async sendSms(to: string, message: string, signal?: AbortSignal): Promise<SmsSendResult> {
+    if (signal?.aborted) {
+      throw new Error("AbortError");
+    }
+
     if (this.failOnRecipient.test(to)) {
-      return { success: false, error: "Simulated failure for recipient" };
+      return {
+        success: false,
+        error: "Simulated failure for recipient",
+        statusCode: 400
+      };
     }
     if (message.includes("__throw__")) {
       throw new Error("Simulated provider exception");
     }
-    if (message.includes("__permanent__")) {
-      throw new PermanentSmsError("Simulated permanent failure");
+
+    if (message.includes("__timeout__")) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 10000);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new Error("AbortError"));
+        });
+      });
     }
-    return { success: true, providerMessageId: `msg-${Date.now()}` };
+
+    return {
+      success: true,
+      providerMessageId: `msg-${Date.now()}`,
+    };
   }
 }
 
