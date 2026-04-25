@@ -67,3 +67,158 @@ export const listSlotsWithFailure = async (options: PaginationOptions): Promise<
   // wrapper for simulating DB failures in tests (not used in production)
   return listSlots(options);
 };
+
+// ─── Class-based SlotService API (used by slotService.test.ts and slot-service.test.ts) ───
+
+export const SLOT_LIST_CACHE_TTL_MS = 60_000;
+
+export class SlotValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SlotValidationError";
+  }
+}
+
+export class SlotNotFoundError extends Error {
+  constructor(message = "Slot not found") {
+    super(message);
+    this.name = "SlotNotFoundError";
+  }
+}
+
+export interface SlotRecord {
+  id: number;
+  professional: string;
+  startTime: number;
+  endTime: number;
+  createdAt: Date;
+}
+
+export interface CreateSlotInput {
+  professional: string;
+  startTime: number;
+  endTime: number;
+}
+
+export interface UpdateSlotInput {
+  professional?: string;
+  startTime?: number;
+  endTime?: number;
+}
+
+interface SlotCache {
+  get(key: string): SlotRecord[] | undefined;
+  set(key: string, value: SlotRecord[]): void;
+  invalidate(key: string): boolean;
+}
+
+const SLOTS_CACHE_KEY = "slots:all";
+
+export class SlotService {
+  private slots: SlotRecord[] = [];
+  private nextId = 1;
+  private readonly cache: SlotCache | null;
+  private readonly clock: () => Date;
+
+  constructor(
+    cacheOrClock?: SlotCache | (() => Date),
+    clock?: () => Date,
+  ) {
+    if (typeof cacheOrClock === "function") {
+      this.cache = null;
+      this.clock = cacheOrClock;
+    } else if (cacheOrClock && typeof cacheOrClock === "object") {
+      this.cache = cacheOrClock;
+      this.clock = clock ?? (() => new Date());
+    } else {
+      this.cache = null;
+      this.clock = () => new Date();
+    }
+  }
+
+  async listSlots(): Promise<{ slots: SlotRecord[]; cache: "hit" | "miss" }>;
+  listSlots(): SlotRecord[];
+  listSlots(): Promise<{ slots: SlotRecord[]; cache: "hit" | "miss" }> | SlotRecord[] {
+    if (this.cache) {
+      const cached = this.cache.get(SLOTS_CACHE_KEY);
+      if (cached !== undefined) {
+        return Promise.resolve({ slots: cached.map((s) => ({ ...s })), cache: "hit" });
+      }
+      const fresh = this.slots.map((s) => ({ ...s }));
+      this.cache.set(SLOTS_CACHE_KEY, fresh);
+      return Promise.resolve({ slots: fresh.map((s) => ({ ...s })), cache: "miss" });
+    }
+    return this.slots.map((s) => ({ ...s }));
+  }
+
+  createSlot(input: CreateSlotInput): SlotRecord {
+    if (typeof input.professional !== "string" || input.professional.trim().length === 0) {
+      throw new SlotValidationError("professional must be a non-empty string");
+    }
+    if (!Number.isFinite(input.startTime) || !Number.isFinite(input.endTime)) {
+      throw new SlotValidationError("startTime and endTime must be finite numbers");
+    }
+    if (input.startTime >= input.endTime) {
+      throw new SlotValidationError("startTime must be before endTime");
+    }
+
+    const slot: SlotRecord = {
+      id: this.nextId++,
+      professional: input.professional.trim(),
+      startTime: input.startTime,
+      endTime: input.endTime,
+      createdAt: this.clock(),
+    };
+
+    this.slots.push(slot);
+    this.cache?.invalidate(SLOTS_CACHE_KEY);
+    return { ...slot };
+  }
+
+  updateSlot(id: number, input: UpdateSlotInput): SlotRecord {
+    if (input === null || typeof input !== "object") {
+      throw new SlotValidationError("Update payload must be an object");
+    }
+
+    const idx = this.slots.findIndex((s) => s.id === id);
+    if (idx === -1) throw new SlotNotFoundError();
+
+    const slot = this.slots[idx];
+
+    if ("professional" in input) {
+      if (typeof input.professional !== "string") {
+        throw new SlotValidationError("professional must be a string");
+      }
+      if (input.professional.trim().length === 0) {
+        throw new SlotValidationError("professional must be a non-empty string");
+      }
+    }
+
+    const newStart = input.startTime ?? slot.startTime;
+    const newEnd = input.endTime ?? slot.endTime;
+
+    if (!Number.isFinite(newStart) || !Number.isFinite(newEnd)) {
+      throw new SlotValidationError("startTime and endTime must be finite numbers");
+    }
+    if (newStart >= newEnd) {
+      throw new SlotValidationError("startTime must be before endTime");
+    }
+
+    const updated: SlotRecord = {
+      ...slot,
+      ...(input.professional !== undefined ? { professional: input.professional.trim() } : {}),
+      startTime: newStart,
+      endTime: newEnd,
+    };
+
+    this.slots[idx] = updated;
+    this.cache?.invalidate(SLOTS_CACHE_KEY);
+    return { ...updated };
+  }
+
+  reset(): void {
+    this.slots = [];
+    this.nextId = 1;
+    this.cache?.invalidate(SLOTS_CACHE_KEY);
+  }
+}
