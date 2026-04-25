@@ -69,6 +69,27 @@ export function recordStampedeBlocked(): void {
   slotCacheStampedeBlocked.inc();
 }
 
+// ─── Slow-query metrics ───────────────────────────────────────────────────────
+
+/**
+ * Counter incremented each time a query exceeds the slow-query threshold.
+ */
+export const slowQueryCounter = new Counter({
+  name: "db_slow_queries_total",
+  help: "Total number of database queries that exceeded the slow-query threshold",
+  registers: [register],
+});
+
+/**
+ * Histogram tracking duration (in milliseconds) of slow queries.
+ */
+export const slowQueryDuration = new Histogram({
+  name: "db_slow_query_duration_ms",
+  help: "Duration in milliseconds of slow database queries",
+  buckets: [100, 250, 500, 1000, 2500, 5000, 10000],
+  registers: [register],
+});
+
 /**
  * Express middleware to track HTTP request duration.
  */

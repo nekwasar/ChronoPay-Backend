@@ -9,9 +9,11 @@ export class Registry {
 export function collectDefaultMetrics(_opts?: unknown) {}
 
 export class Histogram {
+  observations: number[] = [];
   constructor(_opts: unknown) {}
   labels(..._args: unknown[]) { return this; }
-  observe(_value: number) {}
+  observe(value: number) { this.observations.push(value); }
+  reset() { this.observations = []; }
 }
 
 export class Counter {
