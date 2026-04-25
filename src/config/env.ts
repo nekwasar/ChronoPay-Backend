@@ -1,8 +1,16 @@
 export type NodeEnv = "development" | "test" | "production";
 
+export interface SmsEnvConfig {
+  /** Ordered, comma-separated provider names, e.g. "twilio,vonage" or "in-memory" */
+  providers: string[];
+  twilio?: { accountSid: string; authToken: string; fromNumber: string };
+  vonage?: { apiKey: string; apiSecret: string; fromName: string };
+}
+
 export interface EnvConfig {
   nodeEnv: NodeEnv;
   port: number;
+  sms: SmsEnvConfig;
 }
 
 /**
@@ -31,15 +39,13 @@ export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): EnvConfig {
   const issues: string[] = [];
   const nodeEnv = parseNodeEnv(env.NODE_ENV, issues);
   const port = parsePort(env.PORT, issues);
+  const sms = parseSmsConfig(env, issues);
 
   if (issues.length > 0) {
     throw new EnvValidationError(issues);
   }
 
-  return {
-    nodeEnv,
-    port,
-  };
+  return { nodeEnv, port, sms };
 }
 
 function parseNodeEnv(rawValue: string | undefined, issues: string[]): NodeEnv {
@@ -86,4 +92,49 @@ function parsePort(rawValue: string | undefined, issues: string[]): number {
   }
 
   return parsed;
+}
+
+const KNOWN_PROVIDERS = new Set(["twilio", "vonage", "in-memory"]);
+
+function parseSmsConfig(env: NodeJS.ProcessEnv, issues: string[]): SmsEnvConfig {
+  const raw = (env.SMS_PROVIDERS ?? "in-memory").trim();
+  if (!raw) {
+    issues.push("SMS_PROVIDERS must be a non-empty comma-separated list of provider names.");
+    return { providers: ["in-memory"] };
+  }
+
+  const providers = raw.split(",").map((p) => p.trim()).filter(Boolean);
+  for (const p of providers) {
+    if (!KNOWN_PROVIDERS.has(p)) {
+      issues.push(`SMS_PROVIDERS contains unknown provider "${p}". Allowed: ${[...KNOWN_PROVIDERS].join(", ")}.`);
+    }
+  }
+
+  const config: SmsEnvConfig = { providers };
+
+  if (providers.includes("twilio")) {
+    const accountSid = env.TWILIO_ACCOUNT_SID?.trim() ?? "";
+    const authToken = env.TWILIO_AUTH_TOKEN?.trim() ?? "";
+    const fromNumber = env.TWILIO_FROM_NUMBER?.trim() ?? "";
+    if (!accountSid) issues.push("TWILIO_ACCOUNT_SID is required when 'twilio' is listed in SMS_PROVIDERS.");
+    if (!authToken) issues.push("TWILIO_AUTH_TOKEN is required when 'twilio' is listed in SMS_PROVIDERS.");
+    if (!fromNumber) issues.push("TWILIO_FROM_NUMBER is required when 'twilio' is listed in SMS_PROVIDERS.");
+    if (accountSid && authToken && fromNumber) {
+      config.twilio = { accountSid, authToken, fromNumber };
+    }
+  }
+
+  if (providers.includes("vonage")) {
+    const apiKey = env.VONAGE_API_KEY?.trim() ?? "";
+    const apiSecret = env.VONAGE_API_SECRET?.trim() ?? "";
+    const fromName = env.VONAGE_FROM_NAME?.trim() ?? "";
+    if (!apiKey) issues.push("VONAGE_API_KEY is required when 'vonage' is listed in SMS_PROVIDERS.");
+    if (!apiSecret) issues.push("VONAGE_API_SECRET is required when 'vonage' is listed in SMS_PROVIDERS.");
+    if (!fromName) issues.push("VONAGE_FROM_NAME is required when 'vonage' is listed in SMS_PROVIDERS.");
+    if (apiKey && apiSecret && fromName) {
+      config.vonage = { apiKey, apiSecret, fromName };
+    }
+  }
+
+  return config;
 }
