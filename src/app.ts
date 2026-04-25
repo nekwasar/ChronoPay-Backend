@@ -2,15 +2,15 @@ import { createRequire } from "node:module";
 import cors from "cors";
 import express, { Request, Response } from "express";
 import { requireApiKey } from "./middleware/apiKeyAuth.js";
-import { createRequestLogger } from "./middleware/requestLogger.js";
+import { securityHeaders, createSecurityHeaders } from "./middleware/securityHeaders.js";
 import {
   genericErrorHandler,
   jsonParseErrorHandler,
   notFoundHandler,
 } from "./middleware/errorHandling.js";
 import { validateRequiredFields } from "./middleware/validation.js";
-import type { SlotRepository } from "./modules/slots/slot-repository.js";
-import type { BookingIntentService } from "./modules/booking-intents/booking-intent-service.js";
+import { featureFlagContextMiddleware, initializeFeatureFlagsFromEnv } from "./middleware/featureFlags.js";
+import { createBookingIntentsRouter } from "./routes/booking-intents.js";
 
 export interface AppFactoryOptions {
   apiKey?: string;
@@ -412,9 +412,18 @@ function listBuyerProfilesStub(req: Request, res: Response) {
 export function createApp(options: AppFactoryOptions = {}) {
   const app = express();
 
+  // ── Initialize feature flags from environment ──────────────────────────────
+  initializeFeatureFlagsFromEnv();
+
+  // ── Security headers middleware (applied early) ────────────────────────────
+  app.use(securityHeaders);
+
   app.use(cors());
   app.use(express.json({ limit: "100kb" }));
   app.use(createRequestLogger());
+
+  // ── Feature flag context middleware (makes flags available to routes) ──────
+  app.use(featureFlagContextMiddleware);
 
   if (options.enableDocs !== false) {
     registerSwaggerDocs(app);
@@ -437,19 +446,8 @@ export function createApp(options: AppFactoryOptions = {}) {
     createSlot,
   );
 
-  // ─── Contract test routes ──────────────────────────────────────────────────
-  // Stub implementations for validating API contracts (testing only)
-
-  // Checkout routes
-  app.post("/api/v1/checkout/sessions", createCheckoutSessionStub);
-  app.get("/api/v1/checkout/sessions/:sessionId", getCheckoutSessionStub);
-
-  // Buyer profile routes
-  app.post("/api/v1/buyer-profiles", createBuyerProfileStub);
-  app.get("/api/v1/buyer-profiles", listBuyerProfilesStub);
-  app.get("/api/v1/buyer-profiles/:id", getBuyerProfileStub);
-  app.patch("/api/v1/buyer-profiles/:id", updateBuyerProfileStub);
-  app.delete("/api/v1/buyer-profiles/:id", deleteBuyerProfileStub);
+  // ── Booking intents routes ─────────────────────────────────────────────────
+  app.use("/api/v1/booking-intents", createBookingIntentsRouter());
 
   if (options.enableTestRoutes) {
     app.get("/__test__/explode", () => {
