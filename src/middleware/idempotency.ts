@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { getRedisClient } from "../utils/redis.js";
 import { generateRequestHash } from "../utils/hash.js";
+import { validateIdempotencyKey } from "./headerValidation.js";
 
 const IDEMPOTENCY_EXPIRATION = 86400; // 24 hours
 
@@ -14,6 +15,16 @@ export const idempotencyMiddleware = async (
   if (!idempotencyKey) {
     // Proceed normally if no key is provided (Opt-in mode)
     return next();
+  }
+
+  // --- Header validation: reject malformed keys before touching Redis ---
+  const keyValidation = validateIdempotencyKey(idempotencyKey);
+  if (!keyValidation.valid) {
+    res.status(400).json({
+      success: false,
+      error: keyValidation.reason,
+    });
+    return;
   }
 
   try {

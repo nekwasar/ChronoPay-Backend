@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from "express";
 import { logger, LogLevel } from "../utils/logger.js";
 import { IncomingMessage, ServerResponse } from "http";
 import type { LevelWithSilent } from "pino";
+import { validateRequestId } from "./headerValidation.js";
 
 /**
  * Extended Express request interface to include timing and custom properties
@@ -152,11 +153,16 @@ export const createRequestLogger = () => {
      * Custom request ID generation for traceability
      */
     genReqId: (req: any) => {
-      // Use existing request ID if present (from proxy/gateway)
+      // Use existing request ID if present (from proxy/gateway), but only
+      // after strict validation — reject overlong or injection-bearing values.
       const existingId =
         req.headers["x-request-id"] || req.headers["x-correlation-id"];
       if (existingId && typeof existingId === "string") {
-        return existingId;
+        const validation = validateRequestId(existingId);
+        if (validation.valid) {
+          return existingId;
+        }
+        // Invalid value from proxy: fall through and generate a safe synthetic ID
       }
 
       // Generate new UUID v4 format
