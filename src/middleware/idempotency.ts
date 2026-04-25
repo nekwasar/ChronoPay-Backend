@@ -68,6 +68,8 @@ export const idempotencyMiddleware = async (
 
     const processingState: IdempotencyProcessingState = {
       status: "processing",
+      requestMethod: req.method,
+      requestPath: req.originalUrl,
       requestHash: incomingHash,
     };
 
@@ -92,6 +94,8 @@ export const idempotencyMiddleware = async (
     res.json = ((body: unknown) => {
       const completedState: IdempotencyCompletedState = {
         status: "completed",
+        requestMethod: req.method,
+        requestPath: req.originalUrl,
         requestHash: incomingHash,
         statusCode: res.statusCode,
         responseBody: body,

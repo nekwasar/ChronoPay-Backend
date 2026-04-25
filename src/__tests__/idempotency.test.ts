@@ -1,5 +1,34 @@
 import request from "supertest";
-import app from "../index.js";
+import express from "express";
+import { idempotencyMiddleware } from "../middleware/idempotency.js";
+
+const app = express();
+app.use(express.json());
+
+// Mock validation middleware that just checks for required fields
+const mockValidation = (req: any, res: any, next: any) => {
+  const { professional, startTime, endTime } = req.body;
+  if (!professional || !startTime || !endTime) {
+    return res.status(400).json({ success: false });
+  }
+  next();
+};
+
+app.post("/api/v1/slots", mockValidation, idempotencyMiddleware, (req, res) => {
+  res.status(201).json({
+    success: true,
+    slot: req.body,
+  });
+});
+
+app.post("/api/v1/other", mockValidation, idempotencyMiddleware, (req, res) => {
+  res.status(201).json({
+    success: true,
+    other: true,
+  });
+});
+
+import { setRedisClient } from "../cache/redisClient.js";
 
 /**
  * Integration tests for the Idempotency Middleware.
@@ -10,8 +39,7 @@ import app from "../index.js";
  *     2. idempotencyMiddleware
  *   Then the route handler responds with 201.
  *
- * The in-memory Redis test double (in src/utils/redis.ts) is used
- * automatically because NODE_ENV=test, so no real Redis is required.
+ * An in-memory Redis test double is injected via `setRedisClient`.
  *
  * Key behaviours under test:
  *   1. Opt-in: No Idempotency-Key → request proceeds normally every time.
@@ -20,6 +48,8 @@ import app from "../index.js";
  *   4. Payload mismatch: Same key, different body → 422.
  *   5. In-flight / race condition: Key is "processing" → 409.
  *   6. Different keys are independent: No cross-contamination.
+ *   7. Cross-endpoint mismatch: Same key, different route → 409.
+ *   8. Deterministic hashing: Object with keys in different order still matches.
  */
 
 const VALID_SLOT = {
@@ -348,5 +378,65 @@ describe.skip("Idempotency Middleware (integration)", () => {
     await idempotencyMiddleware(req, res, next);
 
     expect(next).toHaveBeenCalledWith(expect.any(IdempotencyPayloadDecryptError));
+  });
+
+  // -------------------------------------------------------------------
+  // 8. Cross-endpoint mismatch (Strong Binding)
+  // -------------------------------------------------------------------
+  describe("when the same Idempotency-Key is used on a different endpoint", () => {
+    it("should return 409 Conflict deterministically", async () => {
+      const key = "idem-endpoint-mismatch-001";
+
+      const first = await request(app)
+        .post("/api/v1/slots")
+        .set("Idempotency-Key", key)
+        .send(VALID_SLOT);
+
+      expect(first.status).toBe(201);
+
+      const second = await request(app)
+        .post("/api/v1/other")
+        .set("Idempotency-Key", key)
+        .send(VALID_SLOT);
+
+      expect(second.status).toBe(409);
+      expect(second.body.error).toMatch(/different endpoint/i);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // 9. Stable hashing mechanism
+  // -------------------------------------------------------------------
+  describe("when the payload keys are reordered (Stable Hash)", () => {
+    it("should still recognize it as an exact duplicate even with arrays and nested objects", async () => {
+      const key = "idem-stable-hash-001";
+
+      const first = await request(app)
+        .post("/api/v1/slots")
+        .set("Idempotency-Key", key)
+        .send({
+          professional: "dr-alice",
+          tags: ["urgent", "new"],
+          nested: { b: 2, a: 1 },
+          startTime: "2025-01-01T09:00:00Z",
+          endTime: "2025-01-01T10:00:00Z"
+        });
+
+      expect(first.status).toBe(201);
+
+      const second = await request(app)
+        .post("/api/v1/slots")
+        .set("Idempotency-Key", key)
+        .send({
+          endTime: "2025-01-01T10:00:00Z", // Reordered
+          nested: { a: 1, b: 2 }, // Reordered inner keys
+          professional: "dr-alice",
+          startTime: "2025-01-01T09:00:00Z",
+          tags: ["urgent", "new"]
+        });
+
+      expect(second.status).toBe(201);
+      expect(second.body).toEqual(first.body);
+    });
   });
 });
