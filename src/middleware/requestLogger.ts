@@ -76,6 +76,31 @@ const getUserAgent = (req: Request): string => {
   return req.get("user-agent") || "unknown";
 };
 
+const sanitizeRequestHeaders = (
+  headers: Record<string, unknown> | undefined,
+): Record<string, unknown> => {
+  if (!headers) {
+    return {};
+  }
+
+  const sanitized: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(headers)) {
+    const normalizedKey = key.toLowerCase();
+    if (
+      normalizedKey === "authorization" ||
+      normalizedKey === "cookie" ||
+      normalizedKey === "x-api-key"
+    ) {
+      continue;
+    }
+
+    sanitized[key] = value;
+  }
+
+  return sanitized;
+};
+
 /**
  * Creates the HTTP request logging middleware for Express
  * Logs all incoming requests with timing, status, and metadata
@@ -173,12 +198,12 @@ export const createRequestLogger = () => {
     serializers: {
       req: (req: Request) => ({
         id: req.id,
-        requestId: req.requestId || req.id,
+        apiKeyId: req.apiKeyId,
         method: req.method,
         url: req.originalUrl || req.url,
         query: req.query,
         params: req.params,
-        headers: req.headers,
+        headers: sanitizeRequestHeaders(req.headers as Record<string, unknown>),
         remoteAddress: req.ip,
         userAgent: req.get("user-agent"),
       }),
@@ -219,11 +244,12 @@ export const errorLoggerMiddleware = (
         stack: err.stack,
         code: err.code,
       },
+      apiKeyId: req.apiKeyId,
       request: {
         id: requestId,
         method: req.method,
         url: req.originalUrl || req.url,
-        headers: req.headers,
+        headers: sanitizeRequestHeaders(req.headers as Record<string, unknown>),
         body: req.body,
         query: req.query,
         params: req.params,

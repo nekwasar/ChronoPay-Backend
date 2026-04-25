@@ -8,15 +8,14 @@ declare module "express-serve-static-core" {
      * Present only on routes protected by authenticateToken.
      */
     user?: {
-      id?: string;
-      role?: string;
+      id: string;
       sub?: string;
       email?: string;
+      role?: string;
       iat?: number;
       exp?: number;
       [key: string]: unknown;
     };
-    requestId?: string;
     flags?: FeatureFlagAccessor;
   }
 }

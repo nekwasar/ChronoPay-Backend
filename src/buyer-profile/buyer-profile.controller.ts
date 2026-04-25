@@ -1,22 +1,8 @@
-/**
- * Buyer Profile Controller
- * 
- * Handles HTTP requests for Buyer Profile operations.
- * Implements RESTful API endpoints with proper error handling.
- */
-
 import { Request, Response } from "express";
 import { buyerProfileService } from "./buyer-profile.service.js";
 import { BuyerProfileFilters, PaginationParams } from "./types/buyer-profile.types.js";
 
-/**
- * Buyer Profile Controller Class
- */
 export class BuyerProfileController {
-  /**
-   * POST /api/v1/buyer-profiles
-   * Create a new buyer profile for the authenticated user
-   */
   async create(req: Request, res: Response) {
     try {
       if (!req.user) {
@@ -38,7 +24,7 @@ export class BuyerProfileController {
       const { fullName, email, phoneNumber, address, avatarUrl } = req.body;
 
       const profile = await buyerProfileService.create({
-        userId,
+        userId: String(req.user.id),
         fullName,
         email,
         phoneNumber,
@@ -54,15 +40,7 @@ export class BuyerProfileController {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to create profile";
 
-      if (message.includes("already has a buyer profile")) {
-        return res.status(409).json({
-          success: false,
-          error: "Conflict",
-          message,
-        });
-      }
-
-      if (message.includes("Email is already in use")) {
+      if (message.includes("already has a buyer profile") || message.includes("Email is already in use")) {
         return res.status(409).json({
           success: false,
           error: "Conflict",
@@ -78,10 +56,6 @@ export class BuyerProfileController {
     }
   }
 
-  /**
-   * GET /api/v1/buyer-profiles/me
-   * Get the current authenticated user's profile
-   */
   async getMyProfile(req: Request, res: Response) {
     try {
       if (!req.user) {
@@ -100,7 +74,7 @@ export class BuyerProfileController {
         });
       }
 
-      const profile = await buyerProfileService.getByUserId(userId);
+      const profile = await buyerProfileService.getByUserId(String(req.user.id));
 
       if (!profile) {
         return res.status(404).json({
@@ -114,7 +88,7 @@ export class BuyerProfileController {
         success: true,
         data: profile,
       });
-    } catch (error) {
+    } catch {
       return res.status(500).json({
         success: false,
         error: "Internal server error",
@@ -123,10 +97,6 @@ export class BuyerProfileController {
     }
   }
 
-  /**
-   * GET /api/v1/buyer-profiles/:id
-   * Get a buyer profile by ID (admin only for other users' profiles)
-   */
   async getById(req: Request, res: Response) {
     try {
       if (!req.user) {
@@ -138,7 +108,6 @@ export class BuyerProfileController {
       }
 
       const { id } = req.params;
-
       const profile = await buyerProfileService.getById(id);
 
       if (!profile) {
@@ -149,8 +118,7 @@ export class BuyerProfileController {
         });
       }
 
-      // Check authorization: users can only view their own profile, admins can view any
-      if (req.user.role !== "admin" && profile.userId !== req.user.id) {
+      if (req.user.role !== "admin" && profile.userId !== String(req.user.id)) {
         return res.status(403).json({
           success: false,
           error: "Access denied",
@@ -162,7 +130,7 @@ export class BuyerProfileController {
         success: true,
         data: profile,
       });
-    } catch (error) {
+    } catch {
       return res.status(500).json({
         success: false,
         error: "Internal server error",
@@ -171,10 +139,6 @@ export class BuyerProfileController {
     }
   }
 
-  /**
-   * GET /api/v1/buyer-profiles
-   * List buyer profiles with optional filters and pagination (admin only)
-   */
   async list(req: Request, res: Response) {
     try {
       if (!req.user) {
@@ -185,7 +149,6 @@ export class BuyerProfileController {
         });
       }
 
-      // Only admins can list all profiles
       if (req.user.role !== "admin") {
         return res.status(403).json({
           success: false,
@@ -194,7 +157,6 @@ export class BuyerProfileController {
         });
       }
 
-      // Parse query parameters
       const filters: BuyerProfileFilters = {};
       if (req.query.userId) filters.userId = req.query.userId as string;
       if (req.query.email) filters.email = req.query.email as string;
@@ -210,7 +172,7 @@ export class BuyerProfileController {
         success: true,
         ...result,
       });
-    } catch (error) {
+    } catch {
       return res.status(500).json({
         success: false,
         error: "Internal server error",
@@ -219,10 +181,6 @@ export class BuyerProfileController {
     }
   }
 
-  /**
-   * PATCH /api/v1/buyer-profiles/:id
-   * Update a buyer profile (owner only)
-   */
   async update(req: Request, res: Response) {
     try {
       if (!req.user) {
@@ -234,8 +192,6 @@ export class BuyerProfileController {
       }
 
       const { id } = req.params;
-
-      // Check if profile exists
       const existingProfile = await buyerProfileService.getById(id);
 
       if (!existingProfile) {
@@ -246,8 +202,7 @@ export class BuyerProfileController {
         });
       }
 
-      // Check authorization: users can only update their own profile, admins can update any
-      if (req.user.role !== "admin" && existingProfile.userId !== req.user.id) {
+      if (req.user.role !== "admin" && existingProfile.userId !== String(req.user.id)) {
         return res.status(403).json({
           success: false,
           error: "Access denied",
@@ -297,10 +252,6 @@ export class BuyerProfileController {
     }
   }
 
-  /**
-   * DELETE /api/v1/buyer-profiles/:id
-   * Delete a buyer profile (owner or admin only)
-   */
   async delete(req: Request, res: Response) {
     try {
       if (!req.user) {
@@ -312,8 +263,6 @@ export class BuyerProfileController {
       }
 
       const { id } = req.params;
-
-      // Check if profile exists
       const existingProfile = await buyerProfileService.getById(id);
 
       if (!existingProfile) {
@@ -324,8 +273,7 @@ export class BuyerProfileController {
         });
       }
 
-      // Check authorization: users can only delete their own profile, admins can delete any
-      if (req.user.role !== "admin" && existingProfile.userId !== req.user.id) {
+      if (req.user.role !== "admin" && existingProfile.userId !== String(req.user.id)) {
         return res.status(403).json({
           success: false,
           error: "Access denied",
@@ -359,5 +307,4 @@ export class BuyerProfileController {
   }
 }
 
-// Export singleton instance
 export const buyerProfileController = new BuyerProfileController();
