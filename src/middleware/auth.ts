@@ -69,8 +69,6 @@ export async function authenticateToken(
 
 /**
  * Require a trusted upstream identity header for protected routes.
- * ChronoPay currently assumes authentication is terminated upstream and the
- * backend receives the authenticated principal through request headers.
  */
 export function requireAuthenticatedActor(
   allowedRoles: ChronoPayRole[] = ["customer", "admin"],

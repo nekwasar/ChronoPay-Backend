@@ -193,7 +193,11 @@ export const createRequestLogger = () => {
       const existingId =
         req.headers["x-request-id"] || req.headers["x-correlation-id"];
       if (existingId && typeof existingId === "string") {
-        return existingId;
+        const validation = validateRequestId(existingId);
+        if (validation.valid) {
+          return existingId;
+        }
+        // Invalid value from proxy: fall through and generate a safe synthetic ID
       }
 
       // Generate new UUID v4 format

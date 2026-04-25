@@ -37,6 +37,16 @@ export const idempotencyMiddleware = async (
     return;
   }
 
+  // --- Header validation: reject malformed keys before touching Redis ---
+  const keyValidation = validateIdempotencyKey(idempotencyKey);
+  if (!keyValidation.valid) {
+    res.status(400).json({
+      success: false,
+      error: keyValidation.reason,
+    });
+    return;
+  }
+
   try {
     const storageKey = `idempotency:req:${idempotencyKey}`;
     const incomingHash = generateRequestHash(req.method, req.originalUrl, req.body);
