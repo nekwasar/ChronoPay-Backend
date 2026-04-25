@@ -11,9 +11,11 @@
     "migrate": "tsx src/scripts/migrate.ts"
   },
   "dependencies": {
+    "@types/pg": "^8.20.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "ioredis": "^5.10.1",
+    "pg": "^8.20.0",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",
     "pino-pretty": "^13.0.0"
