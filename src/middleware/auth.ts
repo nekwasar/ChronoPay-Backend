@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { jwtVerify } from "jose";
 
 export type ChronoPayRole = "customer" | "admin" | "professional";
 
@@ -58,4 +59,36 @@ function parseRole(rawRole: string | undefined): ChronoPayRole {
   }
 
   return "professional";
+}
+
+/**
+ * JWT Bearer token middleware.
+ * Reads JWT_SECRET from env, verifies HS256 token, attaches payload to req.user.
+ */
+export async function authenticateToken(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
+
+  if (!token) {
+    res.status(401).json({ success: false, error: "Bearer token is missing" });
+    return;
+  }
+
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    res.status(500).json({ success: false, error: "JWT_SECRET is not configured" });
+    return;
+  }
+
+  try {
+    const { payload } = await jwtVerify(token, new TextEncoder().encode(secret));
+    req.user = payload as typeof req.user;
+    next();
+  } catch {
+    res.status(401).json({ success: false, error: "Invalid or expired token" });
+  }
 }

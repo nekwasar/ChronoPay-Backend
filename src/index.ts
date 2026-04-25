@@ -24,6 +24,7 @@ import { InMemoryBookingIntentRepository } from "./modules/booking-intents/booki
 import { InMemorySlotRepository } from "./modules/slots/slot-repository.js";
 import slotsRouter, { resetSlotStore } from "./routes/slots.js";
 import checkoutRouter from "./routes/checkout.js";
+import buyerProfileRouter from "./buyer-profile/buyer-profile.routes.js";
 import { startScheduler } from "./scheduler/reminderScheduler.js";
 
 // ─── Environment & feature flags ─────────────────────────────────────────────
@@ -81,6 +82,9 @@ export function createApp(options: CreateAppOptions = {}) {
 
   // ── Checkout ───────────────────────────────────────────────────────────────
   app.use("/api/v1/checkout", checkoutRouter);
+
+  // ── Buyer profiles ─────────────────────────────────────────────────────────
+  app.use("/api/v1/buyer-profiles", buyerProfileRouter);
 
   // ── Booking intents ────────────────────────────────────────────────────────
   const bookingIntentService =
