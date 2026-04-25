@@ -64,22 +64,16 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   // ── Health / readiness / liveness ─────────────────────────────────────────
-  const healthBody = () => ({
-    service: "chronopay-backend",
-    timestamp: new Date().toISOString(),
-    version: "1.0.0",
-  });
-
   app.get("/health", (_req, res) => {
-    res.json({ status: "ok", ...healthBody() });
+    res.json({ status: "ok", service: "chronopay-backend" });
   });
 
   app.get("/ready", (_req, res) => {
-    res.json({ status: "ready", ...healthBody() });
+    res.json({ status: "ready", service: "chronopay-backend" });
   });
 
   app.get("/live", (_req, res) => {
-    res.json({ status: "alive", ...healthBody() });
+    res.json({ status: "alive", service: "chronopay-backend" });
   });
 
   // ── Slots ──────────────────────────────────────────────────────────────────
