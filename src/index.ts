@@ -196,12 +196,24 @@ app.use(errorHandler);
 if (process.env.NODE_ENV !== "test") {
   startScheduler();
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     logInfo(`ChronoPay API listening on http://localhost:${PORT}`, {
       port: PORT,
       environment: process.env.NODE_ENV || "development",
     });
   });
+
+  const shutdown = async (signal: string) => {
+    logInfo(`[shutdown] ${signal} received — closing server and Redis`);
+    server.close(async () => {
+      const { closeRedisClient } = await import("./utils/redis.js");
+      await closeRedisClient();
+      process.exit(0);
+    });
+  };
+
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => shutdown("SIGINT"));
 }
 
 const app = createApp();
