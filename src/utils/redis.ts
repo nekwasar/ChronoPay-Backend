@@ -1,5 +1,3 @@
-import { Redis } from "ioredis";
-
 // Singleton instance using `any` to bypass complex TS Namespace conflicts with ioredis types
 let redisClient: any = null;
 
@@ -21,8 +19,11 @@ export const getRedisClient = (): any => {
       return redisClient;
     }
 
+    // Lazy import so ioredis is only required in non-test environments
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { Redis } = require("ioredis");
     const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
-    
+
     redisClient = new Redis(redisUrl, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
