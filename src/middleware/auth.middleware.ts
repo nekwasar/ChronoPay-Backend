@@ -8,7 +8,25 @@ import { Request, Response, NextFunction } from "express";
 import { verifyJwt, VerifiedJwtPayload } from "../utils/jwt.js";
 
 /**
- * Extend Express Request to include authenticated user (decoded JWT payload)
+ * User roles in the system
+ */
+export enum UserRole {
+  USER = "user",
+  ADMIN = "admin",
+}
+
+/**
+ * Authenticated user structure
+ */
+export interface AuthenticatedUser {
+  id: string;
+  email: string;
+  role: UserRole;
+  [key: string]: unknown;
+}
+
+/**
+ * Extend Express Request to include authenticated user
  */
 declare global {
   namespace Express {
@@ -53,9 +71,13 @@ export function authorize(...allowedRoles: string[]) {
       return res.status(401).json({ success: false, error: "Unauthorized" });
     }
 
-    const userRole = req.user.role;
-    if (!userRole || !allowedRoles.includes(userRole as string)) {
-      return res.status(403).json({ success: false, error: "Insufficient permissions" });
+    const userRole = req.user.role as UserRole;
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({
+        success: false,
+        error: "Insufficient permissions",
+        message: `This action requires one of the following roles: ${allowedRoles.join(", ")}`,
+      });
     }
 
     next();
