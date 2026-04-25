@@ -1,75 +1,65 @@
-# Audit Events — Auth & Authorization Failures
+# Audit Events Registry
 
-ChronoPay emits structured audit log entries whenever authentication or
-authorization fails. Events are written to `logs/audit.log` in JSONL format
-via `AuditLogger` and never block the request path.
+This document serves as a registry for all application audit events, specifically focusing on checkout operations. This enables secure investigations and improves support without logging sensitive raw data.
 
-## Event schema
+## Checkout Service Events
 
-```jsonc
-{
-  "timestamp": "2026-04-25T03:00:00.000Z", // ISO-8601, UTC
-  "action":    "AUTH_MISSING",              // stable code (see table below)
-  "actorIp":   "203.0.113.42",             // client IP from req.ip
-  "resource":  "/api/v1/slots",            // req.originalUrl
-  "status":    401,                        // HTTP status code
-  "metadata": {
-    "method":  "GET"                       // HTTP method
-    // role is included only when a valid enum value is available (see table)
-  }
-}
-```
+The `CheckoutSessionService` emits the following structured audit events to track payment flows and outcomes safely.
 
-## Stable action codes
+### 1. `checkout.initiated`
+- **Description**: Triggered immediately when a request to create a checkout session is received.
+- **Resource**: `customer:<customerId>`
+- **Metadata**:
+  - `amount`: Transaction amount
+  - `currency`: Transaction currency
+  - `paymentMethod`: Requested payment method (e.g., `credit_card`)
 
-| Code | HTTP | Middleware | Trigger |
-|---|---|---|---|
-| `AUTH_MISSING` | 401 | `requireAuthenticatedActor` | `x-chronopay-user-id` header absent or blank |
-| `AUTH_FORBIDDEN` | 403 | `requireAuthenticatedActor` | Resolved role not in `allowedRoles` |
-| `RBAC_MISSING` | 401 | `requireRole` | `x-user-role` header absent or blank |
-| `RBAC_INVALID_ROLE` | 400 | `requireRole` | Header value is not a known role enum |
-| `RBAC_FORBIDDEN` | 403 | `requireRole` | Role is valid but not in `allowedRoles` |
+### 2. `checkout.validated`
+- **Description**: Emitted after verifying initial conditions like session storage limits and authorization parameters.
+- **Resource**: `customer:<customerId>`
+- **Status**: `"success"` or `"failed"`
+- **Metadata**:
+  - `reason`: Explanation if validation fails (e.g., "Authorization required")
 
-## Redaction rules
+### 3. `checkout.reserved`
+- **Description**: Emitted once a checkout session is safely persisted in the memory/database store. Indicates the session is pending payment.
+- **Resource**: `session:<sessionId>`
+- **Metadata**:
+  - `customerId`: Unique ID of the customer
+  - `amount`: Payment amount
+  - `currency`: Payment currency
+  - `paymentMethod`: The method of payment chosen
 
-The following are **never** written to the audit log:
+### 4. `checkout.paid`
+- **Description**: Emitted when a checkout session's payment step completes successfully.
+- **Resource**: `session:<sessionId>`
+- **Status**: `"success"` or `"failed"` (if transitioned from an invalid state)
+- **Metadata**:
+  - `customerId`: Unique ID of the customer
+  - `amount`: Payment amount
+  - `currency`: Payment currency
+  - `paymentMethod`: The method of payment chosen
+  - `tokenProvided`: Boolean indicating if a payment token was received (the actual token is deliberately redacted).
+  - `reason`: Logged if status is `"failed"`.
 
-- Raw header values (e.g. the literal string sent in `x-chronopay-user-id`)
-- Bearer tokens or API keys
-- `userId` on 401 paths (the actor is unauthenticated — no identity to log)
+### 5. `checkout.failed`
+- **Description**: Emitted when an explicit failure request is triggered, marking the session payment as failed.
+- **Resource**: `session:<sessionId>`
+- **Status**: `"success"` or `"failed"` (if transitioned from an invalid state)
+- **Metadata**:
+  - `customerId`: Unique ID of the customer
+  - `reason`: Failure reason, or "Unknown"
 
-The `role` field in `metadata` is only present when it is a controlled enum
-value (`customer`, `admin`, `professional`) resolved by the middleware — never
-the raw header string.
+### 6. `checkout.cancelled`
+- **Description**: Emitted when the user or system cancels the session explicitly.
+- **Resource**: `session:<sessionId>`
+- **Status**: `"success"` or `"failed"` (if transitioned from an invalid state)
+- **Metadata**:
+  - `customerId`: Unique ID of the customer
+  - `reason`: Failure reason logged if state transition is invalid.
 
-## No-double-logging guarantee
+## Security Controls
 
-Each middleware emits at most one audit event per request. Success paths emit
-no events. The `auditMiddleware(action)` wrapper (used on route handlers) is
-separate and does not overlap with these failure-path events.
-
-## Example entries
-
-**Missing identity header (401):**
-```json
-{"timestamp":"2026-04-25T03:00:00.000Z","action":"AUTH_MISSING","actorIp":"203.0.113.42","resource":"/api/v1/slots","status":401,"metadata":{"method":"GET"}}
-```
-
-**Insufficient role (403):**
-```json
-{"timestamp":"2026-04-25T03:00:00.000Z","action":"AUTH_FORBIDDEN","actorIp":"203.0.113.42","resource":"/api/v1/admin","status":403,"metadata":{"method":"POST","role":"customer"}}
-```
-
-**Invalid role value (400):**
-```json
-{"timestamp":"2026-04-25T03:00:00.000Z","action":"RBAC_INVALID_ROLE","actorIp":"203.0.113.42","resource":"/api/v1/slots","status":400,"metadata":{"method":"DELETE","role":"superuser"}}
-```
-
-## Security notes
-
-- Events are fire-and-forget (`log()` never throws). A write failure is logged
-  to `console.error` and does not affect the HTTP response.
-- Log files should be treated as sensitive and access-controlled at the OS
-  level. Rotate and ship to a SIEM rather than retaining indefinitely on disk.
-- `actorIp` reflects `req.ip`. Set `TRUST_PROXY=true` only when running behind
-  a trusted reverse proxy to avoid IP spoofing via `X-Forwarded-For`.
+All events must strictly adhere to the following data sanitization controls:
+- **No Personally Identifiable Information (PII)**: Emails, first names, and last names must explicitly never appear in the `metadata` object.
+- **No PCI Data**: Tokens (`paymentToken`), PANs, CVVs, or any sensitive processor data must be excluded or strictly mapped to a boolean abstraction (e.g., `tokenProvided: true`).
