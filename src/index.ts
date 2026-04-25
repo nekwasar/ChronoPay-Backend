@@ -1,205 +1,157 @@
-import "dotenv/config";
 import express from "express";
-import cors from "cors";
 import { logInfo } from "./utils/logger.js";
-import {
-  createRequestLogger,
-  errorLoggerMiddleware,
-} from "./middleware/requestLogger.js";
-import { validateRequiredFields } from "./middleware/validation";
+import { loadEnvConfig } from "./config/env.js";
+import { getCORSConfig, validateCORSConfig } from "./config/cors.js";
+import { createCORSMiddleware } from "./middleware/cors.js";
+import { createRequestLogger, errorLoggerMiddleware } from "./middleware/requestLogger.js";
 import rateLimiter from "./middleware/rateLimiter.js";
-
-import { loadEnvConfig, type EnvConfig } from "./config/env.js";
+import { idempotencyMiddleware } from "./middleware/idempotency.js";
 import {
-  requireAuthenticatedActor,
-  type AuthenticatedRequest,
-} from "./middleware/auth.js";
+  featureFlagContextMiddleware,
+  initializeFeatureFlagsFromEnv,
+  requireFeatureFlag,
+} from "./middleware/featureFlags.js";
+import { notFoundMiddleware, errorHandler } from "./middleware/errorHandler.js";
+import { register, metricsMiddleware } from "./metrics.js";
+import { requireAuthenticatedActor, type AuthenticatedRequest } from "./middleware/auth.js";
 import { validateRequiredFields } from "./middleware/validation.js";
 import {
-  BookingIntentError,
   BookingIntentService,
+  BookingIntentError,
   parseCreateBookingIntentBody,
 } from "./modules/booking-intents/booking-intent-service.js";
 import { InMemoryBookingIntentRepository } from "./modules/booking-intents/booking-intent-repository.js";
 import { InMemorySlotRepository } from "./modules/slots/slot-repository.js";
+import slotsRouter, { resetSlotStore } from "./routes/slots.js";
+import checkoutRouter from "./routes/checkout.js";
+import { startScheduler } from "./scheduler/reminderScheduler.js";
 
-// Request logging middleware (must be first)
-app.use(createRequestLogger());
+// ─── Environment & feature flags ─────────────────────────────────────────────
 
-// Initialize CORS configuration from environment
-const corsConfig = getCORSConfig();
-validateCORSConfig(corsConfig);
+const config = loadEnvConfig();
+initializeFeatureFlagsFromEnv();
 
-// Apply CORS middleware with allowlist validation
-app.use(createCORSMiddleware(corsConfig));
-app.use(express.json());
-app.use(metricsMiddleware);
+const PORT = config.port ?? 3001;
 
-/**
- * @api {get} /metrics Get Prometheus metrics
- * @apiName GetMetrics
- * @apiGroup Monitoring
- * @apiDescription Exposes application metrics in Prometheus format.
- */
-app.get("/metrics", async (_req, res) => {
-  try {
-    res.set("Content-Type", register.contentType);
-    res.end(await register.metrics());
-  } catch (err) {
-    res.status(500).end(err);
-  }
-});
+// ─── App factory (used by tests to inject dependencies) ──────────────────────
 
-interface AppListener {
-  listen(port: number, callback?: () => void): unknown;
-}
-
-export function createApp(options?: {
+export interface CreateAppOptions {
   slotRepository?: InMemorySlotRepository;
   bookingIntentService?: BookingIntentService;
-}) {
+}
+
+export function createApp(options: CreateAppOptions = {}) {
   const app = express();
-  const slotRepository = options?.slotRepository ?? new InMemorySlotRepository();
-  const bookingIntentService =
-    options?.bookingIntentService ??
-    new BookingIntentService(new InMemoryBookingIntentRepository(), slotRepository);
 
-  app.use(cors());
+  const corsConfig = getCORSConfig();
+  validateCORSConfig(corsConfig);
+
+  app.use(createRequestLogger());
+  app.use(createCORSMiddleware(corsConfig));
   app.use(express.json());
+  app.use(rateLimiter);
+  app.use(metricsMiddleware);
+  app.use(featureFlagContextMiddleware);
 
-  const swaggerOptions = {
-    swaggerDefinition: {
-      openapi: "3.0.0",
-      info: { title: "ChronoPay API", version: "1.0.0" },
-    },
-    apis: ["./src/routes/*.ts"], // adjust if needed
-  };
+  // ── Metrics ────────────────────────────────────────────────────────────────
+  app.get("/metrics", async (_req, res) => {
+    try {
+      res.set("Content-Type", register.contentType);
+      res.end(await register.metrics());
+    } catch (err) {
+      res.status(500).end(err);
+    }
+  });
 
-  const specs = swaggerJsdoc(swaggerOptions);
-  app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(specs));
+  // ── Health / readiness / liveness ─────────────────────────────────────────
+  const healthBody = () => ({
+    service: "chronopay-backend",
+    timestamp: new Date().toISOString(),
+    version: "1.0.0",
+  });
 
   app.get("/health", (_req, res) => {
-    res.json({ status: "ok", service: "chronopay-backend" });
+    res.json({ status: "ok", ...healthBody() });
   });
 
-  app.get("/api/v1/slots", (_req, res) => {
-    res.json({ slots: slotRepository.list() });
+  app.get("/ready", (_req, res) => {
+    res.json({ status: "ready", ...healthBody() });
   });
+
+  app.get("/live", (_req, res) => {
+    res.json({ status: "alive", ...healthBody() });
+  });
+
+  // ── Slots ──────────────────────────────────────────────────────────────────
+  app.use("/api/v1/slots", slotsRouter);
+
+  // ── Checkout ───────────────────────────────────────────────────────────────
+  app.use("/api/v1/checkout", checkoutRouter);
+
+  // ── Booking intents ────────────────────────────────────────────────────────
+  const bookingIntentService =
+    options.bookingIntentService ??
+    new BookingIntentService(
+      new InMemoryBookingIntentRepository(),
+      options.slotRepository ?? new InMemorySlotRepository(),
+    );
 
   app.post(
-    "/api/v1/slots",
-    validateRequiredFields(["professional", "startTime", "endTime"]),
-    (req, res) => {
-      const { professional, startTime, endTime } = req.body;
-
-      res.status(201).json({
-        success: true,
-        slot: {
-          id: 1,
-          professional,
-          startTime,
-          endTime,
-        },
-      });
+    "/api/v1/booking-intents",
+    requireAuthenticatedActor(),
+    validateRequiredFields(["slotId"]),
+    async (req: AuthenticatedRequest, res) => {
+      try {
+        const input = parseCreateBookingIntentBody(req.body);
+        const intent = bookingIntentService.createIntent(input, req.auth!);
+        res.status(201).json({ success: true, bookingIntent: intent });
+      } catch (err) {
+        if (err instanceof BookingIntentError) {
+          res.status(err.status).json({ success: false, error: err.message });
+        } else {
+          res.status(500).json({ success: false, error: "Internal server error" });
+        }
+      }
     },
   );
 
-const options = {
-  definition: {
-    openapi: "3.0.0",
-    info: { title: "ChronoPay API", version: "1.0.0" },
-    components: {
-      securitySchemes: {
-        bearerAuth: {
-          type: "http",
-          scheme: "bearer",
-          bearerFormat: "JWT",
-        },
-      },
-    },
-  },
-  apis: ["./src/index.ts"], // adjust if needed
-};
+  // ── Error handling (must be last) ─────────────────────────────────────────
+  app.use(errorLoggerMiddleware);
+  app.use(notFoundMiddleware);
+  app.use(errorHandler);
 
-const specs = swaggerJsdoc(swaggerOptions);
-app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(specs));
+  return app;
+}
 
-/**
- * @swagger
- * /health:
- *   get:
- *     summary: Health check endpoint
- *     description: Returns the health status of the service
- *     responses:
- *       200:
- *         description: Service is healthy
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   example: ok
- *                 service:
- *                   type: string
- *                   example: chronopay-backend
- *                 timestamp:
- *                   type: string
- *                   example: 2023-10-01T12:00:00.000Z
- *                 version:
- *                   type: string
- *                   example: 1.0.0
- */
-app.get("/health", (_req, res) => {
-  const healthStatus = { status: "ok", service: "chronopay-backend" };
-  logInfo("Health check endpoint called", { endpoint: "/health" });
-  res.json(healthStatus);
-});
+// ─── Singleton app (used by most tests via `import app from "../index.js"`) ──
 
-app.get("/api/v1/slots", (_req, res) => {
-  logInfo("Slots endpoint called", { endpoint: "/api/v1/slots" });
-  res.json({ slots: [] });
-});
+const app = createApp();
+export default app;
 
-// Error handling middleware (must be last)
-app.use(errorLoggerMiddleware);
-app.post(
-  "/api/v1/slots",
-  authenticateToken, // auth first: reject unauthenticated requests before validation
-  validateRequiredFields(["professional", "startTime", "endTime"]),
-  async (req, res) => {
-    const { professional, startTime, endTime } = req.body;
+/** Test helper — resets the in-memory slot store between tests. */
+export function __resetSlotsForTests(): void {
+  resetSlotStore();
+}
 
-    const slot = {
-      id: Date.now(),
-      professional,
-      startTime,
-      endTime,
-    };
+/** Exported for startup-env tests that need to invoke the listen step manually. */
+export function startServer(
+  server: { listen(port: number, callback?: () => void): unknown },
+  cfg: { nodeEnv: string; port: number },
+): void {
+  server.listen(cfg.port, () => {
+    console.log(`ChronoPay API listening on http://localhost:${cfg.port}`);
+  });
+}
 
-    scheduleReminders(slot.id, startTime);
+// ─── Server startup ───────────────────────────────────────────────────────────
 
-    res.status(201).json({
-      success: true,
-      slot,
-    });
-  },
-);
-
-// 404 handler for unmatched routes
-app.use(notFoundMiddleware);
-
-// Global error handler
-app.use(errorHandler);
-
-if (process.env.NODE_ENV !== "test") {
+if (config.nodeEnv !== "test") {
   startScheduler();
 
   const server = app.listen(PORT, () => {
     logInfo(`ChronoPay API listening on http://localhost:${PORT}`, {
       port: PORT,
-      environment: process.env.NODE_ENV || "development",
+      environment: config.nodeEnv,
     });
   });
 
@@ -215,11 +167,3 @@ if (process.env.NODE_ENV !== "test") {
   process.once("SIGTERM", () => shutdown("SIGTERM"));
   process.once("SIGINT", () => shutdown("SIGINT"));
 }
-
-const app = createApp();
-
-if (config.nodeEnv !== "test") {
-  startServer(app, config);
-}
-
-export default app;
