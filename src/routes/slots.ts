@@ -25,6 +25,7 @@ import {
   getCachedSlots,
   setCachedSlots,
   invalidateSlotsCache,
+  getOrFetchSlots,
   type Slot,
 } from "../cache/slotCache.js";
 
@@ -101,22 +102,9 @@ export function listStoredSlots(): Slot[] {
  *         $ref: '#/components/responses/ForbiddenError'
  */
 router.get("/", async (_req: Request, res: Response): Promise<void> => {
-  // ── 1. Try cache ────────────────────────────────────────────────────────────
-  const cached = await getCachedSlots();
-  if (cached !== null) {
-    res.set("X-Cache", "HIT");
-    res.json({ slots: cached });
-    return;
-  }
+  const { slots, cacheStatus } = await getOrFetchSlots(async () => [...slotStore]);
 
-  // ── 2. Cache miss — fetch from data source ──────────────────────────────────
-  // TODO: replace with real DB query (e.g. slotRepository.findAll())
-  const slots: Slot[] = [...slotStore];
-
-  // ── 3. Populate cache for subsequent requests ───────────────────────────────
-  await setCachedSlots(slots);
-
-  res.set("X-Cache", "MISS");
+  res.set("X-Cache", cacheStatus === "HIT" ? "HIT" : "MISS");
   res.json({ slots });
 });
 

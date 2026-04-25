@@ -14,6 +14,14 @@
  * Security: Cache keys contain only numeric page numbers and resource names.
  * No PII or sensitive data is included in cache keys.
  *
+ * Stampede protection
+ * ───────────────────
+ * `getOrFetchSlots` implements a single-flight pattern: when the cache is cold
+ * and multiple concurrent requests arrive simultaneously, only the first
+ * request triggers the origin fetch.  All subsequent in-flight requests wait
+ * on the same Promise and receive the same result, preventing a thundering-herd
+ * of redundant origin calls.
+ *
  * Extend the key schema here (e.g. "slots:professional:<id>") as new query
  * dimensions are added.
  */
@@ -22,6 +30,7 @@ import {
   getRedisClient,
   SLOT_CACHE_TTL_SECONDS,
 } from "./redisClient.js";
+import { recordCacheHit, recordCacheMiss, recordStampedeBlocked } from "../metrics.js";
 
 
 export const SLOT_CACHE_KEYS = {
