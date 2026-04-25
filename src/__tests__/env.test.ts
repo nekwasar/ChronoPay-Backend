@@ -5,6 +5,7 @@ describe("environment config validation", () => {
     expect(loadEnvConfig({})).toEqual({
       nodeEnv: "development",
       port: 3001,
+      slowQueryThresholdMs: null,
     });
   });
 
@@ -17,6 +18,7 @@ describe("environment config validation", () => {
     ).toEqual({
       nodeEnv: "production",
       port: 8080,
+      slowQueryThresholdMs: null,
     });
   });
 
@@ -75,3 +77,29 @@ describe("environment config validation", () => {
     }
   });
 });
+
+  describe("SLOW_QUERY_THRESHOLD_MS", () => {
+    it("defaults to null when omitted", () => {
+      expect(loadEnvConfig({}).slowQueryThresholdMs).toBeNull();
+    });
+
+    it("parses a valid positive integer", () => {
+      expect(loadEnvConfig({ SLOW_QUERY_THRESHOLD_MS: "500" }).slowQueryThresholdMs).toBe(500);
+    });
+
+    it("rejects zero", () => {
+      expect(() => loadEnvConfig({ SLOW_QUERY_THRESHOLD_MS: "0" })).toThrow(EnvValidationError);
+    });
+
+    it("rejects a non-numeric string", () => {
+      expect(() => loadEnvConfig({ SLOW_QUERY_THRESHOLD_MS: "fast" })).toThrow(EnvValidationError);
+    });
+
+    it("rejects a whitespace-only value", () => {
+      expect(() => loadEnvConfig({ SLOW_QUERY_THRESHOLD_MS: "   " })).toThrow(EnvValidationError);
+    });
+
+    it("rejects a float", () => {
+      expect(() => loadEnvConfig({ SLOW_QUERY_THRESHOLD_MS: "1.5" })).toThrow(EnvValidationError);
+    });
+  });

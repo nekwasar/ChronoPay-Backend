@@ -3,6 +3,7 @@ export type NodeEnv = "development" | "test" | "production";
 export interface EnvConfig {
   nodeEnv: NodeEnv;
   port: number;
+  slowQueryThresholdMs: number | null;
 }
 
 /**
@@ -31,6 +32,7 @@ export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): EnvConfig {
   const issues: string[] = [];
   const nodeEnv = parseNodeEnv(env.NODE_ENV, issues);
   const port = parsePort(env.PORT, issues);
+  const slowQueryThresholdMs = parseSlowQueryThreshold(env.SLOW_QUERY_THRESHOLD_MS, issues);
 
   if (issues.length > 0) {
     throw new EnvValidationError(issues);
@@ -39,6 +41,7 @@ export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): EnvConfig {
   return {
     nodeEnv,
     port,
+    slowQueryThresholdMs,
   };
 }
 
@@ -83,6 +86,31 @@ function parsePort(rawValue: string | undefined, issues: string[]): number {
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
     issues.push("PORT must be a whole number between 1 and 65535.");
     return 3001;
+  }
+
+  return parsed;
+}
+
+function parseSlowQueryThreshold(rawValue: string | undefined, issues: string[]): number | null {
+  if (rawValue === undefined) {
+    return null; // disabled by default
+  }
+
+  const value = rawValue.trim();
+  if (value.length === 0) {
+    issues.push("SLOW_QUERY_THRESHOLD_MS must be a positive integer when provided.");
+    return null;
+  }
+
+  if (!/^\d+$/.test(value)) {
+    issues.push("SLOW_QUERY_THRESHOLD_MS must be a positive integer when provided.");
+    return null;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    issues.push("SLOW_QUERY_THRESHOLD_MS must be a positive integer when provided.");
+    return null;
   }
 
   return parsed;
