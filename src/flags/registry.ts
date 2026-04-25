@@ -7,4 +7,10 @@ export const FEATURE_FLAGS: Record<FeatureFlagName, FeatureFlagDefinition> = {
     // Default true preserves current API behavior unless explicitly disabled.
     defaultEnabled: true,
   },
+  CHECKOUT: {
+    envVar: "FF_CHECKOUT",
+    description: "Enable checkout endpoints (POST/GET /api/v1/checkout/sessions). Set to false to kill-switch during incidents.",
+    // Default true: checkout is enabled unless explicitly disabled.
+    defaultEnabled: true,
+  },
 };

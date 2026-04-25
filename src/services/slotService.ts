@@ -1,5 +1,9 @@
 import { PaginatedSlots, Slot } from "../types.js";
 import { getSlotsCount, getSlotsPage } from "../repositories/slotRepository.js";
+import {
+  recordSlotOperation,
+  recordListLatency,
+} from "../metrics/slotMetrics.js";
 
 const MAX_LIMIT = 100;
 const DEFAULT_PAGE = 1;
@@ -39,28 +43,29 @@ export const listSlots = async (
     throw new Error("Limit exceeds maximum allowed value");
   }
 
-  const total = await repository.getSlotsCount();
-  const offset = (page - 1) * limit;
+  const start = Date.now();
+  try {
+    const total = await repository.getSlotsCount();
+    const offset = (page - 1) * limit;
 
-  if (offset >= total && total > 0) {
-    // requested page beyond number of items results empty data, keep page
-    return {
-      data: [],
-      page,
-      limit,
-      total,
-    };
+    if (offset >= total && total > 0) {
+      recordListLatency(Date.now() - start);
+      recordSlotOperation("list", "success");
+      return { data: [], page, limit, total };
+    }
+
+    const rawSlots = await repository.getSlotsPage(offset, limit);
+    const data = rawSlots.map(sanitizeSlot);
+
+    recordListLatency(Date.now() - start);
+    recordSlotOperation("list", "success");
+
+    return { data, page, limit, total };
+  } catch (err) {
+    recordListLatency(Date.now() - start);
+    recordSlotOperation("list", "error");
+    throw err;
   }
-
-  const rawSlots = await repository.getSlotsPage(offset, limit);
-  const data = rawSlots.map(sanitizeSlot);
-
-  return {
-    data,
-    page,
-    limit,
-    total,
-  };
 };
 
 export const listSlotsWithFailure = async (options: PaginationOptions): Promise<PaginatedSlots> => {
