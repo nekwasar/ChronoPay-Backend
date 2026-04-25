@@ -1,23 +1,30 @@
 export type NodeEnv = "development" | "test" | "production";
 
-export interface SmsEnvConfig {
-  /** Ordered, comma-separated provider names, e.g. "twilio,vonage" or "in-memory" */
-  providers: string[];
-  twilio?: { accountSid: string; authToken: string; fromNumber: string };
-  vonage?: { apiKey: string; apiSecret: string; fromName: string };
+export interface EncryptionKey {
+  id: string;
+  value: Buffer;
 }
+
+export type IdempotencyRedisEncryptionConfig =
+  | {
+      enabled: false;
+      algorithm: "aes-256-gcm";
+      activeKey: null;
+      decryptionKeys: readonly EncryptionKey[];
+    }
+  | {
+      enabled: true;
+      algorithm: "aes-256-gcm";
+      activeKey: EncryptionKey;
+      decryptionKeys: readonly EncryptionKey[];
+    };
 
 export interface EnvConfig {
   nodeEnv: NodeEnv;
   port: number;
-  sms: SmsEnvConfig;
+  redisUrl: string;
 }
 
-/**
- * Error raised when process environment variables fail validation.
- * The message is safe to surface during startup because it only contains
- * variable names and validation reasons, never raw values.
- */
 export class EnvValidationError extends Error {
   readonly issues: string[];
 
@@ -28,30 +35,41 @@ export class EnvValidationError extends Error {
   }
 }
 
-/**
- * Parse and validate environment variables once at startup.
- *
- * @param env Raw environment map, usually process.env.
- * @returns Typed validated configuration for the application runtime.
- * @throws EnvValidationError When one or more variables are missing or invalid.
- */
 export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): EnvConfig {
   const issues: string[] = [];
+
   const nodeEnv = parseNodeEnv(env.NODE_ENV, issues);
   const port = parsePort(env.PORT, issues);
-  const sms = parseSmsConfig(env, issues);
+  const redisUrl = parseRedisUrl(env.REDIS_URL, issues);
+
+  const timeoutMs = parsePositiveInteger(env.REQUEST_TIMEOUT_MS, "REQUEST_TIMEOUT_MS", 30_000, issues);
+  const rateLimitWindowMs = parsePositiveInteger(
+    env.RATE_LIMIT_WINDOW_MS,
+    "RATE_LIMIT_WINDOW_MS",
+    15 * 60 * 1000,
+    issues,
+  );
+  const rateLimitMax = parsePositiveInteger(env.RATE_LIMIT_MAX, "RATE_LIMIT_MAX", 100, issues);
+  const trustProxy = parseBoolean(env.TRUST_PROXY, "TRUST_PROXY", false, issues);
+
+  const webhookSecret = parseOptionalString(env.WEBHOOK_SECRET);
+  const jwtIssuer = parseOptionalString(env.JWT_ISSUER);
+  const jwtAudience = parseOptionalString(env.JWT_AUDIENCE);
+  const corsAllowedOrigins = parseStringList(env.CORS_ALLOWED_ORIGINS);
 
   if (issues.length > 0) {
     throw new EnvValidationError(issues);
   }
 
-  return { nodeEnv, port, sms };
+  return {
+    nodeEnv,
+    port,
+    redisUrl,
+  };
 }
 
 function parseNodeEnv(rawValue: string | undefined, issues: string[]): NodeEnv {
-  if (rawValue === undefined) {
-    return "development";
-  }
+  if (rawValue === undefined) return "development";
 
   const value = rawValue.trim();
   const allowedValues: NodeEnv[] = ["development", "test", "production"];
@@ -70,71 +88,88 @@ function parseNodeEnv(rawValue: string | undefined, issues: string[]): NodeEnv {
 }
 
 function parsePort(rawValue: string | undefined, issues: string[]): number {
-  if (rawValue === undefined) {
-    return 3001;
-  }
+  return parseIntegerInRange(rawValue, "PORT", 3001, 1, 65535, issues);
+}
+
+function parsePositiveInteger(
+  rawValue: string | undefined,
+  key: string,
+  defaultValue: number,
+  issues: string[],
+): number {
+  return parseIntegerInRange(rawValue, key, defaultValue, 1, Number.MAX_SAFE_INTEGER, issues);
+}
+
+function parseIntegerInRange(
+  rawValue: string | undefined,
+  key: string,
+  defaultValue: number,
+  min: number,
+  max: number,
+  issues: string[],
+): number {
+  if (rawValue === undefined) return defaultValue;
 
   const value = rawValue.trim();
   if (value.length === 0) {
-    issues.push("PORT must be a non-empty integer when provided.");
-    return 3001;
+    issues.push(`${key} must be a non-empty integer when provided.`);
+    return defaultValue;
   }
 
   if (!/^\d+$/.test(value)) {
-    issues.push("PORT must be a whole number between 1 and 65535.");
-    return 3001;
+    issues.push(`${key} must be a whole number between ${min} and ${max}.`);
+    return defaultValue;
   }
 
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
-    issues.push("PORT must be a whole number between 1 and 65535.");
-    return 3001;
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    issues.push(`${key} must be a whole number between ${min} and ${max}.`);
+    return defaultValue;
   }
 
   return parsed;
 }
 
-const KNOWN_PROVIDERS = new Set(["twilio", "vonage", "in-memory"]);
-
-function parseSmsConfig(env: NodeJS.ProcessEnv, issues: string[]): SmsEnvConfig {
-  const raw = (env.SMS_PROVIDERS ?? "in-memory").trim();
-  if (!raw) {
-    issues.push("SMS_PROVIDERS must be a non-empty comma-separated list of provider names.");
-    return { providers: ["in-memory"] };
+function parseRedisUrl(rawValue: string | undefined, issues: string[]): string {
+  if (rawValue === undefined) {
+    issues.push("REDIS_URL is required.");
+    return "redis://localhost:6379";
   }
 
-  const providers = raw.split(",").map((p) => p.trim()).filter(Boolean);
-  for (const p of providers) {
-    if (!KNOWN_PROVIDERS.has(p)) {
-      issues.push(`SMS_PROVIDERS contains unknown provider "${p}". Allowed: ${[...KNOWN_PROVIDERS].join(", ")}.`);
+  const value = rawValue.trim();
+
+  if (value.length === 0) {
+    issues.push("REDIS_URL must be a non-empty value.");
+    return "redis://localhost:6379";
+  }
+
+  try {
+    const url = new URL(value);
+    const allowedSchemes = ["redis:", "rediss:"];
+
+    if (!allowedSchemes.includes(url.protocol)) {
+      issues.push("REDIS_URL must use one of the supported schemes: redis, rediss.");
+      return "redis://localhost:6379";
     }
-  }
 
-  const config: SmsEnvConfig = { providers };
-
-  if (providers.includes("twilio")) {
-    const accountSid = env.TWILIO_ACCOUNT_SID?.trim() ?? "";
-    const authToken = env.TWILIO_AUTH_TOKEN?.trim() ?? "";
-    const fromNumber = env.TWILIO_FROM_NUMBER?.trim() ?? "";
-    if (!accountSid) issues.push("TWILIO_ACCOUNT_SID is required when 'twilio' is listed in SMS_PROVIDERS.");
-    if (!authToken) issues.push("TWILIO_AUTH_TOKEN is required when 'twilio' is listed in SMS_PROVIDERS.");
-    if (!fromNumber) issues.push("TWILIO_FROM_NUMBER is required when 'twilio' is listed in SMS_PROVIDERS.");
-    if (accountSid && authToken && fromNumber) {
-      config.twilio = { accountSid, authToken, fromNumber };
+    if (!url.hostname) {
+      issues.push("REDIS_URL must include a host.");
+      return "redis://localhost:6379";
     }
-  }
 
-  if (providers.includes("vonage")) {
-    const apiKey = env.VONAGE_API_KEY?.trim() ?? "";
-    const apiSecret = env.VONAGE_API_SECRET?.trim() ?? "";
-    const fromName = env.VONAGE_FROM_NAME?.trim() ?? "";
-    if (!apiKey) issues.push("VONAGE_API_KEY is required when 'vonage' is listed in SMS_PROVIDERS.");
-    if (!apiSecret) issues.push("VONAGE_API_SECRET is required when 'vonage' is listed in SMS_PROVIDERS.");
-    if (!fromName) issues.push("VONAGE_FROM_NAME is required when 'vonage' is listed in SMS_PROVIDERS.");
-    if (apiKey && apiSecret && fromName) {
-      config.vonage = { apiKey, apiSecret, fromName };
+    if (url.username || url.password) {
+      issues.push("REDIS_URL must not contain embedded credentials.");
+      return "redis://localhost:6379";
     }
-  }
 
-  return config;
+    if (/\s/.test(value)) {
+      issues.push("REDIS_URL must not contain whitespace.");
+      return "redis://localhost:6379";
+    }
+
+    return value;
+  } catch {
+    issues.push("REDIS_URL must be a valid URL.");
+    return "redis://localhost:6379";
+  }
 }
