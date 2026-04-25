@@ -19,9 +19,6 @@
  *   `setRedisClient` escape hatch.
  */
 
-import {Redis} from "ioredis";
-
-
 export const SLOT_CACHE_TTL_SECONDS = parseInt(
   process.env.REDIS_SLOT_TTL_SECONDS ?? "60",
   10,
@@ -56,6 +53,8 @@ export function getRedisClient(): RedisClient | null {
   }
 
   if (!_client) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { Redis } = require("ioredis");
     const redis = new Redis(REDIS_URL, {
       // Retry with exponential back-off capped at 2 s; give up after 10 attempts.
       retryStrategy: (times:number) => Math.min(times * 100, 2000),
