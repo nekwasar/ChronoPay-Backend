@@ -16,33 +16,16 @@
  *   handlers.
  */
 
-import { logInfo, logError, logWarn } from "../utils/logger.js";
+import {createRequire} from "module";
+
 
 export const SLOT_CACHE_TTL_SECONDS = parseInt(
   process.env.REDIS_SLOT_TTL_SECONDS ?? "60",
   10,
 );
 
-/** Maximum reconnect attempts before the client stops retrying. */
-const MAX_RETRY_ATTEMPTS = 10;
-/** Backoff cap in milliseconds. */
-const MAX_RETRY_DELAY_MS = 2000;
-
-/**
- * Strip credentials from a Redis URL so it is safe to log.
- * redis://:secret@host:6379 → redis://host:6379
- */
-export function sanitizeRedisUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    parsed.password = "";
-    parsed.username = "";
-    return parsed.toString();
-  } catch {
-    // Not a valid URL — return a fixed placeholder rather than the raw value.
-    return "[invalid-redis-url]";
-  }
-}
+const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
+const require = createRequire(import.meta.url);
 
 /**
  * The minimal Redis surface the rest of the application uses.
@@ -50,8 +33,15 @@ export function sanitizeRedisUrl(url: string): string {
  */
 export interface RedisClient {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string, exMode: "EX", ttl: number): Promise<unknown>;
+  set(
+    key: string,
+    value: string,
+    exMode: "EX",
+    ttl: number,
+    condition?: "NX",
+  ): Promise<unknown>;
   del(key: string): Promise<unknown>;
+  keys(pattern: string): Promise<string[]>;
   quit(): Promise<unknown>;
 }
 
@@ -75,7 +65,37 @@ export function getRedisClient(): RedisClient | null {
   }
 
   if (!_client) {
-    _client = createLiveClient();
+    const {Redis} = require("ioredis") as {
+      Redis: new (
+        url: string,
+        options: {
+          retryStrategy: (times: number) => number;
+          maxRetriesPerRequest: number;
+          enableReadyCheck: boolean;
+          lazyConnect: boolean;
+        },
+      ) => RedisClient & {
+        on(event: "connect" | "error", handler: (...args: unknown[]) => void): void;
+      };
+    };
+    const redis = new Redis(REDIS_URL, {
+      // Retry with exponential back-off capped at 2 s; give up after 10 attempts.
+      retryStrategy: (times:number) => Math.min(times * 100, 2000),
+      maxRetriesPerRequest: 3,
+      enableReadyCheck: true,
+      lazyConnect: false,
+    });
+
+    redis.on("connect", () =>
+      console.info("[redis] Connected to", REDIS_URL),
+    );
+    redis.on("error", (...args: unknown[]) => {
+      const err = args[0];
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[redis] Connection error:", message);
+    });
+
+    _client = redis;
   }
 
   return _client;

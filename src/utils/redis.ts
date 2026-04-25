@@ -1,40 +1,4 @@
-/**
- * Redis client used by the idempotency middleware and other request-path code.
- *
- * Lifecycle
- * ─────────
- * - connect / ready / error / close / end events are logged via the structured
- *   logger with the URL sanitized (credentials stripped).
- * - Exponential backoff reconnect capped at 3 s; gives up after 10 attempts.
- * - `closeRedisClient()` is idempotent and safe to call from signal handlers.
- *
- * Test isolation
- * ──────────────
- * When NODE_ENV=test an in-memory double is returned so tests never need a
- * real Redis server.
- */
-
-import { logInfo, logError, logWarn } from "./logger.js";
-
-const MAX_RETRY_ATTEMPTS = 10;
-const MAX_RETRY_DELAY_MS = 3000;
-
-/**
- * Strip credentials from a Redis URL so it is safe to log.
- * redis://:secret@host:6379 → redis://host:6379
- */
-export function sanitizeRedisUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    parsed.password = "";
-    parsed.username = "";
-    return parsed.toString();
-  } catch {
-    return "[invalid-redis-url]";
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// Singleton instance using `any` to bypass complex TS Namespace conflicts with ioredis types
 let redisClient: any = null;
 let _ready = false;
 
@@ -43,7 +7,11 @@ export function isRedisReady(): boolean {
   return _ready;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+/** Reset the singleton — used in tests to get a fresh in-memory store. */
+export const resetRedisClient = (): void => {
+  redisClient = null;
+};
+
 export const getRedisClient = (): any => {
   if (!redisClient) {
     if (process.env.NODE_ENV === "test") {
@@ -52,23 +20,8 @@ export const getRedisClient = (): any => {
       redisClient = {
         ping: async () => "PONG",
         on: () => {},
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        get: async (key: string): Promise<string | null> => {
-          const entry = memoryStore.get(key);
-          if (!entry) return null;
-          if (Date.now() > entry.expiresAt) {
-            memoryStore.delete(key);
-            return null;
-          }
-          return entry.value;
-        },
-        set: async (
-          key: string,
-          val: string,
-          _ex: string,
-          ttlSeconds: number,
-          nx?: string,
-        ): Promise<string | null> => {
+        get: async (key: string) => memoryStore.get(key) || null,
+        set: async (key: string, val: string, ex?: string, time?: number, nx?: string) => {
           if (nx === "NX" && memoryStore.has(key)) return null;
           memoryStore.set(key, {
             value: val,
@@ -85,10 +38,10 @@ export const getRedisClient = (): any => {
       return redisClient;
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // Dynamically import ioredis only in non-test environments
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { Redis } = require("ioredis");
-    const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379";
-    const safeUrl = sanitizeRedisUrl(redisUrl);
+    const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
 
     redisClient = new Redis(redisUrl, {
       maxRetriesPerRequest: null,
