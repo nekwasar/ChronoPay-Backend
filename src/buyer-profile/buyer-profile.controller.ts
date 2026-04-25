@@ -30,7 +30,7 @@ export class BuyerProfileController {
       const { fullName, email, phoneNumber, address, avatarUrl } = req.body;
 
       const profile = await buyerProfileService.create({
-        userId: req.user.id,
+        userId: req.user.id as string,
         fullName,
         email,
         phoneNumber,
@@ -84,7 +84,7 @@ export class BuyerProfileController {
         });
       }
 
-      const profile = await buyerProfileService.getByUserId(req.user.id);
+      const profile = await buyerProfileService.getByUserId(req.user.id as string);
 
       if (!profile) {
         return res.status(404).json({

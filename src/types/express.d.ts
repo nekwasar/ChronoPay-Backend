@@ -1,4 +1,5 @@
 import "express";
+import type { FeatureFlagAccessor } from "../flags/types.js";
 
 declare module "express-serve-static-core" {
   interface Request {
@@ -13,5 +14,7 @@ declare module "express-serve-static-core" {
       exp?: number;
       [key: string]: unknown;
     };
+    /** Feature flag accessor attached by featureFlagContextMiddleware. */
+    flags: FeatureFlagAccessor;
   }
 }
