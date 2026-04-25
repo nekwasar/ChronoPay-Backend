@@ -21,8 +21,8 @@ describe("RBAC and Validation Coverage", () => {
 
     it("should cover 500 catch block in rbac", () => {
       const middleware = requireRole(["admin"]);
-      const req = { header: () => { throw new Error(); } };
-      const res = { status: (s: number) => ({ json: (j: any) => ({ s, j }) }) };
+      const req = { header: () => { throw new Error(); } } as any;
+      const res = { status: (s: number) => ({ json: (j: any) => ({ s, j }) }) } as any;
       const result: any = middleware(req, res, () => {});
       expect(result.s).toBe(500);
     });
@@ -35,16 +35,16 @@ describe("RBAC and Validation Coverage", () => {
       // so we unit test it directly.
       const { validateRequiredFields } = await import("../middleware/validation.js");
       const middleware = validateRequiredFields(["test"]);
-      const res = { status: (s: number) => ({ json: (j: any) => ({ s, j }) }) };
-      const result: any = middleware({ body: null }, res, () => {});
+      const res = { status: (s: number) => ({ json: (j: any) => ({ s, j }) }) } as any;
+      const result: any = middleware({ body: null } as any, res, () => {});
       expect(result.s).toBe(400);
     });
 
     it("should cover 500 catch block in validation", async () => {
       const { validateRequiredFields } = await import("../middleware/validation.js");
       const middleware = validateRequiredFields(["test"]);
-      const req = { get body() { throw new Error(); } };
-      const res = { status: (s: number) => ({ json: (j: any) => ({ s, j }) }) };
+      const req = { get body() { throw new Error(); } } as any;
+      const res = { status: (s: number) => ({ json: (j: any) => ({ s, j }) }) } as any;
       const result: any = middleware(req, res, () => {});
       expect(result.s).toBe(500);
     });

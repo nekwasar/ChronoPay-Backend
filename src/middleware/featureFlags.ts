@@ -2,6 +2,15 @@ import { NextFunction, Request, Response } from "express";
 import { getFeatureFlagAccessor, setFeatureFlagsFromEnv } from "../flags/index.js";
 import type { FeatureFlagName } from "../flags/index.js";
 
+// Extend Express Request to include flags
+declare global {
+  namespace Express {
+    interface Request {
+      flags?: ReturnType<typeof getFeatureFlagAccessor>;
+    }
+  }
+}
+
 export function featureFlagContextMiddleware(
   req: Request,
   _res: Response,
@@ -14,7 +23,7 @@ export function featureFlagContextMiddleware(
 export function requireFeatureFlag(flag: FeatureFlagName) {
   return (req: Request, res: Response, next: NextFunction) => {
     try {
-      if (!req.flags.isEnabled(flag)) {
+      if (!req.flags || !req.flags.isEnabled(flag)) {
         return res.status(503).json({
           success: false,
           code: "FEATURE_DISABLED",

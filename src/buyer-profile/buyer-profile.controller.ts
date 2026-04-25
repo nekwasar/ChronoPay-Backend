@@ -30,7 +30,7 @@ export class BuyerProfileController {
       const { fullName, email, phoneNumber, address, avatarUrl } = req.body;
 
       const profile = await buyerProfileService.create({
-        userId: req.user.id,
+        userId: req.user.id as string,
         fullName,
         email,
         phoneNumber,
@@ -84,7 +84,7 @@ export class BuyerProfileController {
         });
       }
 
-      const profile = await buyerProfileService.getByUserId(req.user.id);
+      const profile = await buyerProfileService.getByUserId(req.user.id as string);
 
       if (!profile) {
         return res.status(404).json({
@@ -134,7 +134,7 @@ export class BuyerProfileController {
       }
 
       // Check authorization: users can only view their own profile, admins can view any
-      if (req.user.role !== "admin" && profile.userId !== req.user.id) {
+      if (req.user.role !== "admin" && profile.userId !== (req.user.id as string)) {
         return res.status(403).json({
           success: false,
           error: "Access denied",
@@ -231,7 +231,7 @@ export class BuyerProfileController {
       }
 
       // Check authorization: users can only update their own profile, admins can update any
-      if (req.user.role !== "admin" && existingProfile.userId !== req.user.id) {
+      if (req.user.role !== "admin" && existingProfile.userId !== (req.user.id as string)) {
         return res.status(403).json({
           success: false,
           error: "Access denied",
@@ -309,7 +309,7 @@ export class BuyerProfileController {
       }
 
       // Check authorization: users can only delete their own profile, admins can delete any
-      if (req.user.role !== "admin" && existingProfile.userId !== req.user.id) {
+      if (req.user.role !== "admin" && existingProfile.userId !== (req.user.id as string)) {
         return res.status(403).json({
           success: false,
           error: "Access denied",

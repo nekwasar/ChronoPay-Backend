@@ -19,9 +19,13 @@ export enum UserRole {
  * Authenticated user structure
  */
 export interface AuthenticatedUser {
+  [key: string]: unknown;
   id: string;
   email: string;
   role: UserRole;
+  sub?: string;
+  iat?: number;
+  exp?: number;
 }
 
 /**
@@ -117,7 +121,8 @@ export function authorize(...allowedRoles: UserRole[]) {
       });
     }
 
-    if (!allowedRoles.includes(req.user.role)) {
+    const userRole = req.user.role as UserRole;
+    if (!allowedRoles.includes(userRole)) {
       return res.status(403).json({
         success: false,
         error: "Insufficient permissions",

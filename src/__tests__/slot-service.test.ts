@@ -10,10 +10,10 @@ describe("SlotService", () => {
 
   beforeEach(() => {
     currentTime = Date.parse("2026-03-28T00:00:00.000Z");
-    service = new SlotService(() => new Date(currentTime));
+    service = new SlotService(undefined, () => new Date(currentTime));
   });
 
-  it("creates slots and returns a sorted list", () => {
+  it("creates slots and returns a sorted list", async () => {
     const first = service.createSlot({
       professional: "alice",
       startTime: 1000,
@@ -28,11 +28,13 @@ describe("SlotService", () => {
       endTime: 4000,
     });
 
-    const list = service.listSlots();
+    const result = await service.listSlots();
+    const list = result.slots;
 
-    expect(list.map((slot) => slot.id)).toEqual([first.id, second.id]);
+    expect(list.map((slot: any) => slot.id)).toEqual([first.id, second.id]);
     list[0].professional = "tampered";
-    expect(service.listSlots()[0].professional).toBe("alice");
+    const result2 = await service.listSlots();
+    expect(result2.slots[0].professional).toBe("alice");
   });
 
   it("throws when updating with invalid payload type", () => {
