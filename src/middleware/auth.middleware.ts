@@ -22,18 +22,9 @@ export interface AuthenticatedUser {
   id: string;
   email: string;
   role: UserRole;
+  [key: string]: unknown;
 }
 
-/**
- * Extend Express Request to include authenticated user
- */
-declare global {
-  namespace Express {
-    interface Request {
-      user?: AuthenticatedUser;
-    }
-  }
-}
 
 /**
  * Mock user database for development/testing
@@ -117,7 +108,7 @@ export function authorize(...allowedRoles: UserRole[]) {
       });
     }
 
-    if (!allowedRoles.includes(req.user.role)) {
+    if (!allowedRoles.includes(req.user.role as UserRole)) {
       return res.status(403).json({
         success: false,
         error: "Insufficient permissions",
