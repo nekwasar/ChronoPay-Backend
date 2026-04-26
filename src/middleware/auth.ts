@@ -120,7 +120,5 @@ function parseRole(rawRole: string | undefined): ChronoPayRole {
     return normalized;
   }
 
-  return "professional";
-}
-
-export const authenticateToken = requireAuthenticatedActor;
+   return "professional";
+ }
