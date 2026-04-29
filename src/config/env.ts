@@ -190,32 +190,23 @@ function parseRedisUrl(rawValue: string | undefined, issues: string[]): string {
   }
 }
 
-function parseBoolean(
-  rawValue: string | undefined,
-  key: string,
-  defaultValue: boolean,
-  issues: string[],
-): boolean {
+function parseBoolean(rawValue: string | undefined, key: string, defaultValue: boolean, issues: string[]): boolean {
   if (rawValue === undefined) return defaultValue;
-  const value = rawValue.trim().toLowerCase();
-  const truthy = ["true", "1", "on", "yes"];
-  const falsy = ["false", "0", "off", "no"];
-  if (truthy.includes(value)) return true;
-  if (falsy.includes(value)) return false;
-  issues.push(`${key} must be a boolean (true/false, 1/0, on/off, yes/no).`);
+  const val = rawValue.trim().toLowerCase();
+  if (val === "true" || val === "1") return true;
+  if (val === "false" || val === "0") return false;
+  issues.push(`${key} must be a boolean value (true/false).`);
   return defaultValue;
 }
 
 function parseOptionalString(rawValue: string | undefined): string | undefined {
   if (rawValue === undefined) return undefined;
-  const trimmed = rawValue.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+  const val = rawValue.trim();
+  if (val === "") return undefined;
+  return val;
 }
 
 function parseStringList(rawValue: string | undefined): string[] {
-  if (!rawValue) return [];
-  return rawValue
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  if (rawValue === undefined) return [];
+  return rawValue.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
 }

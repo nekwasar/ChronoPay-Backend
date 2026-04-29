@@ -120,5 +120,7 @@ function parseRole(rawRole: string | undefined): ChronoPayRole {
     return normalized;
   }
 
-   return "professional";
- }
+  return "professional";
+}
+
+// Removed duplicate export of authenticateToken

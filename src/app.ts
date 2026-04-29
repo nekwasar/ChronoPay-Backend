@@ -14,9 +14,10 @@ import { createContentNegotiationMiddleware } from "./middleware/contentNegotiat
 import { createRequestLogger } from "./middleware/requestLogger.js";
 import { featureFlagContextMiddleware, initializeFeatureFlagsFromEnv } from "./middleware/featureFlags.js";
 import { createBookingIntentsRouter } from "./routes/booking-intents.js";
-import { configService } from "./config/config.service.js";
-import type { SlotRepository } from "./modules/slots/slot-repository.js";
-import type { BookingIntentService } from "./modules/booking-intents/booking-intent-service.js";
+import { AmountUtils } from "./utils/amount.js";
+import checkoutRouter from "./routes/checkout.js";
+import { createContentNegotiationMiddleware } from "./middleware/contentNegotiation.js";
+import { createRequestLogger } from "./middleware/requestLogger.js";
 
 export interface AppFactoryOptions {
   apiKey?: string;
@@ -224,10 +225,10 @@ function createCheckoutSessionStub(req: Request, res: Response) {
   }
 
   // Semantic validation (422)
-  if (typeof payment.amount !== "number" || payment.amount <= 0) {
+  if (!AmountUtils.validate(payment.amount)) {
     return res.status(422).json({
       success: false,
-      error: "Amount must be positive",
+      error: "Amount must be a strictly positive integer in native minor units",
     });
   }
 
@@ -578,6 +579,7 @@ export function createApp(options: AppFactoryOptions = {}) {
 
   // ── Booking intents routes ─────────────────────────────────────────────────
   app.use("/api/v1/booking-intents", createBookingIntentsRouter());
+  app.use("/api/v1/checkout", checkoutRouter);
 
   if (options.enableTestRoutes) {
     app.get("/__test__/explode", () => {
